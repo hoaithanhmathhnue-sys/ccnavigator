@@ -11,5 +11,5 @@
       ]
     }
   ],
-  "functions": { "api/chat.js": { "maxDuration": 20 } }
+  "functions": { "api/chat.js": { "maxDuration": 30 } }
 }

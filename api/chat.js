@@ -1,6 +1,6 @@
 // Vercel Serverless Function – trợ lý AI "AI Discourse Assistant" của CC-Navigator.
 // Khóa API chỉ nằm trong biến môi trường của Vercel, KHÔNG bao giờ gửi xuống trình duyệt.
-//   GEMINI_API_KEY  (khuyến nghị)  + GEMINI_MODEL (mặc định gemini-3.5-flash-lite)
+//   GEMINI_API_KEY  (khuyến nghị)  + GEMINI_MODEL (tùy chọn, được thử trước chuỗi GEMINI_MODELS)
 //   hoặc OPENAI_API_KEY + OPENAI_MODEL (mặc định gpt-4o-mini)
 //
 // Trình duyệt chỉ gửi mã bài, phương án chọn, lời giải thích và số lần thử. Đề bài, đáp án và
@@ -47,22 +47,79 @@ function buildUserMessage(ex, order, choice, p) {
   return lines.join("\n");
 }
 
+// Thứ tự thử model. Không có 3.7-flash và 3.5-flash vì Google đã tự chuyển chúng sang model kế nhiệm.
+const GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
+const GEMINI_BUDGET_MS = 25000, GEMINI_ATTEMPT_MS = 12000; // tổng thời gian phải nhỏ hơn maxDuration trong vercel.json
+
+const orderedModels = () => [...new Set([(process.env.GEMINI_MODEL || "").trim(), ...GEMINI_MODELS].filter(Boolean))];
+
+// Gemini 3.x không nhận temperature/topP/topK. Hạn mức token rộng vì token suy luận cũng được tính vào đây; độ dài trả lời đã giới hạn ở prompt.
+function geminiConfig(model) {
+  return /^gemini-(3|flash-latest)/.test(model)
+    ? { maxOutputTokens: 4096, thinkingConfig: { thinkingLevel: "LOW" } }
+    : { temperature: 0.4, maxOutputTokens: 4096 };
+}
+
+// Lỗi khóa phải xét trước 400 vì Google báo khóa sai dưới dạng 400 INVALID_ARGUMENT kèm API_KEY_INVALID.
+function classifyGemini(status, body) {
+  const t = String(body || "").toLowerCase();
+  if (/api_key_invalid|api key not valid|api key expired|unauthenticated/.test(t) || status === 401) return "INVALID_API_KEY";
+  if (status === 429 || t.includes("resource_exhausted")) return t.includes("per minute") ? "RATE_LIMIT" : "QUOTA_EXCEEDED";
+  if (status === 403) return "PERMISSION_DENIED";
+  if (status === 404) return "NOT_FOUND";
+  if (status >= 500 || /overloaded|high demand|try again later|unavailable/.test(t)) return "MODEL_OVERLOADED";
+  if (status === 400) return "INVALID_ARGUMENT";
+  return "UNKNOWN";
+}
+
+// Các lỗi này gắn với một model cụ thể (quota miễn phí cũng tính theo từng model), nên thử model kế tiếp.
+const TRY_NEXT_MODEL = new Set(["RATE_LIMIT", "QUOTA_EXCEEDED", "PERMISSION_DENIED", "NOT_FOUND", "MODEL_OVERLOADED", "INVALID_ARGUMENT", "EMPTY_REPLY"]);
+
+function aiError(code) { return Object.assign(new Error(code), { code }); }
+
+// Lý do hiển thị cho học sinh. Quá tải không bao giờ được báo thành lỗi khóa.
+const AI_ERROR_TEXT = {
+  INVALID_API_KEY: "khóa API không hợp lệ hoặc đã hết hạn, giáo viên cần kiểm tra lại trên Vercel",
+  PERMISSION_DENIED: "khóa API không có quyền truy cập Gemini API",
+  QUOTA_EXCEEDED: "đã hết quota hoặc vượt giới hạn tốc độ API, em thử lại sau",
+  RATE_LIMIT: "đã hết quota hoặc vượt giới hạn tốc độ API, em thử lại sau",
+  MODEL_OVERLOADED: "các model AI đang quá tải, em thử lại sau ít phút",
+  NOT_FOUND: "model AI không còn khả dụng, giáo viên cần kiểm tra lại cấu hình",
+  NETWORK_ERROR: "máy chủ không kết nối được tới dịch vụ AI"
+};
+
 async function callGemini(userMsg) {
-  const model = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-    method: "POST",
-    signal: AbortSignal.timeout(15000),
-    headers: { "Content-Type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      contents: [{ role: "user", parts: [{ text: userMsg }] }],
-      // Hạn mức rộng vì token suy luận của model cũng được tính vào đây; độ dài trả lời đã giới hạn ở prompt.
-      generationConfig: { temperature: 0.4, maxOutputTokens: 2048 }
-    })
-  });
-  if (!r.ok) throw new Error("Gemini " + r.status);
-  const j = await r.json();
-  return (j?.candidates?.[0]?.content?.parts || []).filter((x) => !x.thought).map((x) => x.text || "").join("");
+  const deadline = Date.now() + GEMINI_BUDGET_MS;
+  let last = "UNKNOWN";
+  for (const model of orderedModels()) {
+    const left = deadline - Date.now();
+    if (left < 1500) break;
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        method: "POST",
+        signal: AbortSignal.timeout(Math.min(left, GEMINI_ATTEMPT_MS)),
+        headers: { "Content-Type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+          contents: [{ role: "user", parts: [{ text: userMsg }] }],
+          generationConfig: geminiConfig(model)
+        })
+      });
+      if (r.ok) {
+        const j = await r.json();
+        const text = (j?.candidates?.[0]?.content?.parts || []).filter((x) => !x.thought).map((x) => x.text || "").join("").trim();
+        if (text) return text;
+        last = "EMPTY_REPLY";
+      } else {
+        last = classifyGemini(r.status, await r.text());
+      }
+    } catch (e) {
+      last = e.name === "TimeoutError" ? "MODEL_OVERLOADED" : "NETWORK_ERROR";
+    }
+    console.warn(`Gemini ${model}: ${last}`); // chỉ ghi model và loại lỗi, không ghi khóa hay bài làm
+    if (!TRY_NEXT_MODEL.has(last)) break;
+  }
+  throw aiError(last);
 }
 
 async function callOpenAI(userMsg) {
@@ -121,7 +178,7 @@ module.exports = async function handler(req, res) {
     if (!reply) throw new Error("empty");
     return res.status(200).json({ reply: reply.slice(0, 1500) });
   } catch (e) {
-    console.error("AI error:", e.message); // chỉ ghi mã lỗi, không ghi nội dung bài làm
-    return res.status(502).json({ error: "Không gọi được trợ lý AI, hệ thống dùng phản hồi dự phòng." });
+    console.error("AI error:", e.code || e.message); // chỉ ghi mã lỗi, không ghi nội dung bài làm
+    return res.status(502).json({ error: AI_ERROR_TEXT[e.code] || "không gọi được trợ lý AI", code: e.code || "UNKNOWN" });
   }
 };

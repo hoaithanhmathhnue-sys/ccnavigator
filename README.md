@@ -35,7 +35,7 @@ vercel.json  package.json  .env.example  .gitignore  .vercelignore
 1. Tạo repository mới trên GitHub, tải toàn bộ nội dung thư mục này lên (không cần `node_modules`).
 2. Vào vercel.com → **Add New → Project** → chọn repository vừa tạo.
 3. Framework Preset: **Other**; Build Command và Output Directory: để trống → **Deploy**.
-4. (Tùy chọn, để bật trợ lý AI) Project → **Settings → Environment Variables**, thêm `GEMINI_API_KEY` (hoặc `OPENAI_API_KEY`), có thể thêm `GEMINI_MODEL`/`OPENAI_MODEL` (mặc định `gemini-3.5-flash-lite`); sau đó **Redeploy**.
+4. (Tùy chọn, để bật trợ lý AI) Project → **Settings → Environment Variables**, thêm `GEMINI_API_KEY` (hoặc `OPENAI_API_KEY`), có thể thêm `GEMINI_MODEL`/`OPENAI_MODEL` (mặc định `gemini-3.8-flash`, tự chuyển sang model dự phòng khi quá tải hoặc hết lượt); sau đó **Redeploy**.
 
 Không bao giờ ghi khóa API vào mã nguồn hay đẩy tệp `.env` lên GitHub (đã có trong `.gitignore`). Nên đặt hạn mức chi tiêu cho khóa API tại Google AI Studio. Máy chủ tự tra đề và đáp án trong `js/data.js`, chỉ nhận yêu cầu từ chính trang web và giới hạn tần suất; khi nhà cung cấp AI báo quá tải, học sinh tự động nhận phản hồi cục bộ.
 

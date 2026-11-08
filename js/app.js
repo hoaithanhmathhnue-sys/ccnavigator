@@ -172,8 +172,8 @@
   async function askAI(ex, rt, reveal) {
     const body = { exId: ex.id, choice: rt.sel, perm: rt.perm, reasoning: rt.reasoning, attempt: rt.attempts, reveal };
     const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    if (!r.ok) throw new Error("ai");
-    const j = await r.json(); if (!j.reply) throw new Error("empty");
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.reply) throw new Error(j.error || "");
     return j.reply;
   }
 
@@ -196,7 +196,7 @@
       try {
         const txt = await askAI(ex, rt, fin && !local.correct);
         rt.fb = { src: "🤖 Trợ lý AI (hãy tự đối chiếu với bằng chứng trong văn bản)", text: txt, correct: local.correct };
-      } catch (e) { rt.fb.src = "Phản hồi cục bộ (không gọi được AI nên dùng bản dự phòng)"; }
+      } catch (e) { rt.fb.src = "Phản hồi cục bộ (" + ((e.name === "Error" && e.message) || "không gọi được AI nên dùng bản dự phòng") + ")"; }
       if (S.view === "practice" && D.EXERCISES[S.cur] === ex) $("#fb").innerHTML = fbHtml(rt.fb);
     }
   }
