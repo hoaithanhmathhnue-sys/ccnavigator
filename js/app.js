@@ -1,6 +1,6 @@
 (function () {
   "use strict";
-  const D = window.CCN_DATA, E = window.CCN_ENGINE;
+  const D = window.CCN_DATA, E = window.CCN_ENGINE, AI = window.CCN_AI;
   const $ = (s, r = document) => r.querySelector(s);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const L = E.LETTERS;
@@ -8,7 +8,8 @@
   /* ---------------- Lưu trữ ---------------- */
   const store = {
     get(k, d) { try { const v = localStorage.getItem("ccn_" + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
-    set(k, v) { try { localStorage.setItem("ccn_" + k, JSON.stringify(v)); } catch (e) { /* bộ nhớ đầy hoặc bị chặn */ } }
+    set(k, v) { try { localStorage.setItem("ccn_" + k, JSON.stringify(v)); } catch (e) { /* bộ nhớ đầy hoặc bị chặn */ } },
+    del(k) { try { localStorage.removeItem("ccn_" + k); } catch (e) { /* bị chặn */ } }
   };
   let profile = store.get("profile", { name: "", cls: "" });
   let logs = store.get("logs", []);
@@ -22,8 +23,12 @@
   const num = (x, d = 2) => Number(x).toFixed(d).replace(".", ",");
 
   /* ---------------- Trạng thái AI ---------------- */
-  const S = { ai: false, aiOn: false, cur: 0, filter: "all", rt: {}, view: "home" };
-  fetch("/api/chat", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).then((j) => { if (j && j.ai) { S.ai = true; S.aiOn = true; if (S.view === "practice") render(); } }).catch(() => {});
+  const S = { serverAi: false, aiOn: true, cur: 0, filter: "all", rt: {}, view: "home" };
+  const userKey = () => store.get("gemini_api_key", ""); // khóa riêng của người dùng được ưu tiên hơn khóa máy chủ
+  const aiReady = () => !!userKey() || S.serverAi;
+  fetch("/api/chat", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).then((j) => { if (j && j.ai) { S.serverAi = true; if (S.view === "practice") render(); } }).catch(() => {}).finally(() => {
+    if (!aiReady() && !store.get("key_prompted", false)) { store.set("key_prompted", true); if (!$("#modal").innerHTML) apiKeyModal(); } // chỉ tự hiện một lần
+  });
 
   /* ---------------- Tiện ích ---------------- */
   function seeded(id) { let h = 0; for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0; return () => ((h = (h * 1664525 + 1013904223) >>> 0) / 4294967296); }
@@ -43,6 +48,7 @@
   function renderNav() {
     $("#nav").innerHTML = VIEWS.map(([k, t]) => `<a href="#${k}" class="${S.view === k ? "on" : ""}">${t}</a>`).join("");
     $("#whoBtn").textContent = profile.name ? `👤 ${profile.name}${profile.cls ? " · " + profile.cls : ""}` : "👤 Nhập tên / lớp";
+    $("#keyBtn").textContent = userKey() ? "⚙️ API Key ✓" : "⚙️ API Key";
   }
   function render() {
     const v = (location.hash || "#home").slice(1);
@@ -144,7 +150,7 @@
     <div class="layout"><aside>
       <div class="tabs"><button data-act="filter" data-v="all" class="${S.filter === "all" ? "on" : ""}">Tất cả</button><button data-act="filter" data-v="order" class="${S.filter === "order" ? "on" : ""}">Sắp xếp</button><button data-act="filter" data-v="gap" class="${S.filter === "gap" ? "on" : ""}">Đọc điền</button></div>
       <div class="exlist">${items}</div>
-      <div class="card small"><b>Trợ lý AI:</b> ${S.ai ? `<label class="ai-switch"><input type="checkbox" id="aiSw" ${S.aiOn ? "checked" : ""}> Dùng AI (máy chủ đã cấu hình)</label>` : `<span class="muted">Chưa kết nối AI nên đang dùng <b>phản hồi cục bộ</b> theo chuỗi liên kết đã soạn sẵn. Cấu hình khóa API trên Vercel để bật AI.</span>`}</div>
+      <div class="card small"><b>Trợ lý AI:</b> ${aiReady() ? `<label class="ai-switch"><input type="checkbox" id="aiSw" ${S.aiOn ? "checked" : ""}> Dùng AI (${userKey() ? "khóa của em" : "máy chủ đã cấu hình"})</label>` : `<span class="muted">Chưa có khóa API nên đang dùng <b>phản hồi cục bộ</b> theo chuỗi liên kết đã soạn sẵn.</span> <a href="#" data-act="apikey">Cài đặt API Key</a>`}</div>
     </aside><section>
       <div class="card"><div class="row"><span class="chip">${ex.id}</span><span class="chip">${ex.type === "order" ? "Sắp xếp câu/đoạn" : "Đọc điền"}</span><span class="chip">${esc(ex.level)}</span><span class="muted small">Chủ đề: ${esc(ex.topic)} · Lần thử: ${rt.attempts}</span></div>
         <div id="exbody" style="margin-top:10px">${exBody(ex, rt, rt.done, rt.sel, rt.done)}</div>
@@ -169,12 +175,18 @@
     return `<h3 style="margin-top:16px">🔎 Phân tích điểm gãy của các phương án (Bước 4)</h3><div class="scroll"><table><thead><tr><th>Phương án</th><th>Kết luận</th></tr></thead><tbody>${rtOf(ex).perm.map((oi, pos) => `<tr><td><b>${L[pos]}</b>. ${esc(E.clip(optText(ex, oi), 70))}</td><td>${oi === ex.answer ? "✅ Đúng – " + esc(ex.chain) : tagChip(ex.options[oi].tag) + " " + esc(ex.options[oi].why)}</td></tr>`).join("")}</tbody></table></div>`;
   }
 
-  async function askAI(ex, rt, reveal) {
+  async function askAI(ex, rt, reveal, onSwitch) {
+    const key = userKey();
+    if (key) { // trình duyệt gọi thẳng Google, khóa không đi qua máy chủ của ứng dụng
+      const userMsg = AI.buildUserMessage(ex, rt.perm, rt.sel, { reasoning: rt.reasoning, attempt: rt.attempts, reveal });
+      try { return await AI.callGemini({ apiKey: key, userMsg, preferred: store.get("gemini_model", ""), onSwitch }); }
+      catch (e) { e.message = AI.errorText(e.code, true); throw e; }
+    }
     const body = { exId: ex.id, choice: rt.sel, perm: rt.perm, reasoning: rt.reasoning, attempt: rt.attempts, reveal };
     const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok || !j.reply) throw new Error(j.error || "");
-    return j.reply;
+    return { text: j.reply, model: j.model };
   }
 
   async function doCheck(reveal) {
@@ -189,15 +201,20 @@
     rt.fb = { src: "Phản hồi cục bộ (theo chuỗi liên kết đã soạn sẵn)", text: local.text, correct: local.correct };
     if (fin) rt.done = true;
     progress[ex.id] = local.correct && !reveal ? "ok" : (progress[ex.id] === "ok" ? "ok" : "bad"); store.set("progress", progress);
-    addLog({ kind: reveal ? "reveal" : "answer", exId: ex.id, etype: ex.type, choice: sel, correct: !reveal && local.correct, tag: local.tag, attempt: rt.attempts, secs: Math.round((Date.now() - rt.t0) / 1000), mode: S.ai && S.aiOn ? "ai" : "local" });
+    addLog({ kind: reveal ? "reveal" : "answer", exId: ex.id, etype: ex.type, choice: sel, correct: !reveal && local.correct, tag: local.tag, attempt: rt.attempts, secs: Math.round((Date.now() - rt.t0) / 1000), mode: aiReady() && S.aiOn ? "ai" : "local" });
     practice();
-    if (S.ai && S.aiOn && rt.sel != null) {
-      $("#fb").innerHTML = fbHtml({ src: "⏳ Trợ lý AI đang phân tích…", text: local.text, correct: local.correct });
+    if (aiReady() && S.aiOn && rt.sel != null) {
+      const showing = () => S.view === "practice" && D.EXERCISES[S.cur] === ex;
+      const notice = (src) => { if (showing()) $("#fb").innerHTML = fbHtml({ src, text: local.text, correct: local.correct }); };
+      notice("⏳ Trợ lý AI đang phân tích…");
       try {
-        const txt = await askAI(ex, rt, fin && !local.correct);
-        rt.fb = { src: "🤖 Trợ lý AI (hãy tự đối chiếu với bằng chứng trong văn bản)", text: txt, correct: local.correct };
-      } catch (e) { rt.fb.src = "Phản hồi cục bộ (" + ((e.name === "Error" && e.message) || "không gọi được AI nên dùng bản dự phòng") + ")"; }
-      if (S.view === "practice" && D.EXERCISES[S.cur] === ex) $("#fb").innerHTML = fbHtml(rt.fb);
+        const r = await askAI(ex, rt, fin && !local.correct, (from, to, why) => notice(`⏳ Đang tự động chuyển từ ${from} sang ${to} (do ${from} ${why})...`));
+        rt.fb = { src: `🤖 Trợ lý AI${r.model ? " · " + r.model : ""} (hãy tự đối chiếu với bằng chứng trong văn bản)`, text: r.text, correct: local.correct };
+      } catch (e) {
+        rt.fb.src = "Phản hồi cục bộ (" + ((e.name === "Error" && e.message) || "không gọi được AI nên dùng bản dự phòng") + ")";
+        if (e.code === "INVALID_API_KEY" && userKey()) apiKeyModal("❌ " + AI.errorText(e.code, true) + ".");
+      }
+      if (showing()) $("#fb").innerHTML = fbHtml(rt.fb);
     }
   }
 
@@ -366,6 +383,41 @@
     <div class="row" style="margin-top:14px"><button class="btn" data-act="saveprofile">Lưu</button><button class="btn ghost" data-act="closemodal">Đóng</button></div></div></div>`;
   }
 
+  /* ---------------- Cài đặt API Key ---------------- */
+  function apiKeyModal(msg) {
+    const saved = store.get("gemini_model", AI.DEFAULT_GEMINI_MODEL);
+    S.pickModel = AI.GEMINI_MODELS.includes(saved) ? saved : AI.DEFAULT_GEMINI_MODEL;
+    $("#modal").innerHTML = `<div class="modal"><div class="box" role="dialog" aria-modal="true" aria-labelledby="ktitle"><h3 id="ktitle">⚙️ Cài đặt API Key</h3>
+    <p class="muted small">Nhập khóa Gemini của chính em để bật trợ lý AI. Chưa có khóa vẫn luyện tập được với phản hồi cục bộ.</p>
+    <p class="small"><b>Lấy khóa:</b> mở <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>, đăng nhập Gmail, bấm “Create API key”, rồi dán vào ô dưới đây.</p>
+    <label for="kv">API Key</label><div class="keyrow"><input type="password" id="kv" autocomplete="off" spellcheck="false" placeholder="AIzaSy... hoặc AQ..." value="${esc(userKey())}"><button class="btn ghost" data-act="togglekey" type="button">Hiện</button></div>
+    <div id="kmsg" class="small" role="status">${msg ? esc(msg) : ""}</div>
+    <label style="display:block;margin-top:10px">Model ưu tiên</label><div class="mcards">${AI.GEMINI_MODEL_INFO.map((m) => `<button type="button" class="mcard${m.id === S.pickModel ? " on" : ""}" data-act="pickmodel" data-v="${esc(m.id)}" aria-pressed="${m.id === S.pickModel}"><b>${esc(m.id)}</b><span>${esc(m.note)}</span></button>`).join("")}</div>
+    <p class="muted small">🔒 Khóa chỉ lưu trong trình duyệt của máy này và gửi thẳng tới Google, không đi qua máy chủ của ứng dụng. Dùng máy chung thì bấm “Xóa key” trước khi rời đi.</p>
+    <div class="row"><button class="btn" data-act="savekey">Lưu</button><button class="btn sec" data-act="testkey">Kiểm tra key</button><button class="btn bad" data-act="clearkey">Xóa key</button><button class="btn ghost" data-act="closemodal">Đóng</button></div></div></div>`;
+  }
+  function keyMsg(text, ok) { const m = $("#kmsg"); if (m) { m.textContent = text; m.className = "small " + (ok ? "v-strong" : "v-break"); } }
+  function readKey() {
+    const key = $("#kv").value.trim();
+    if (!key) { keyMsg("Vui lòng nhập API Key."); return null; }
+    if (!AI.isValidGoogleAiApiKey(key)) { keyMsg("Khóa chưa đúng định dạng: khóa phải bắt đầu bằng AIzaSy hoặc AQ và không có dấu cách."); return null; }
+    return key;
+  }
+  function pickModelCard(id) {
+    S.pickModel = id;
+    document.querySelectorAll(".mcard").forEach((c) => { const on = c.dataset.v === id; c.classList.toggle("on", on); c.setAttribute("aria-pressed", String(on)); });
+  }
+  async function testKey(btn) {
+    const key = readKey(); if (!key) return;
+    btn.disabled = true; keyMsg("⏳ Đang kiểm tra khóa…", true);
+    try {
+      const model = await AI.validateKey({ apiKey: key, preferred: S.pickModel });
+      if ($("#kmsg")) pickModelCard(model);
+      keyMsg(`✅ Khóa dùng được với model ${model}. Bấm “Lưu” để áp dụng.`, true);
+    } catch (e) { keyMsg("❌ " + AI.errorText(e.code, true) + "."); }
+    if (btn.isConnected) btn.disabled = false;
+  }
+
   /* ---------------- Xử lý sự kiện ---------------- */
   document.addEventListener("click", (e) => {
     const goEl = e.target.closest("[data-go]"); if (goEl) { location.hash = goEl.dataset.go; return; }
@@ -375,6 +427,12 @@
     switch (a) {
       case "profile": profileModal(); break;
       case "closemodal": $("#modal").innerHTML = ""; break;
+      case "apikey": apiKeyModal(); break;
+      case "togglekey": { const inp = $("#kv"), show = inp.type === "password"; inp.type = show ? "text" : "password"; t.textContent = show ? "Ẩn" : "Hiện"; break; }
+      case "pickmodel": pickModelCard(v); break;
+      case "testkey": testKey(t); break;
+      case "savekey": { const key = readKey(); if (!key) break; store.set("gemini_api_key", key); store.set("gemini_model", S.pickModel); $("#modal").innerHTML = ""; render(); break; }
+      case "clearkey": store.del("gemini_api_key"); store.del("gemini_model"); $("#modal").innerHTML = ""; render(); break;
       case "saveprofile": profile = { name: $("#pn").value.trim(), cls: $("#pc").value.trim().toUpperCase() }; store.set("profile", profile); $("#modal").innerHTML = ""; render(); break;
       case "gtab": S.gtab = v; guide(); break;
       case "tsec": S.tsec = v; guide(); break;
