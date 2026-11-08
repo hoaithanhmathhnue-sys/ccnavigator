@@ -46,7 +46,10 @@
   /* ---------------- Điều hướng ---------------- */
   const VIEWS = [["home", "🏠 Trang chủ"], ["guide", "📘 Cẩm nang"], ["practice", "🤖 Trợ lý AI"], ["map", "🗺️ Bản đồ Given–New"], ["breakdown", "🔍 Điểm gãy"], ["test", "📝 Kiểm tra"], ["dash", "📊 Tiến bộ"]];
   function renderNav() {
-    $("#nav").innerHTML = VIEWS.map(([k, t]) => `<a href="#${k}" class="${S.view === k ? "on" : ""}">${t}</a>`).join("");
+    const navEl = $("#nav");
+    navEl.innerHTML = VIEWS.map(([k, t]) => `<a href="#${k}" class="${S.view === k ? "on" : ""}">${t}</a>`).join("");
+    const onEl = navEl.querySelector(".on"); // trên điện thoại menu cuộn ngang: giữ mục đang mở trong tầm nhìn
+    if (onEl) navEl.scrollLeft = onEl.offsetLeft - navEl.offsetLeft - (navEl.clientWidth - onEl.offsetWidth) / 2;
     $("#whoBtn").textContent = profile.name ? `👤 ${profile.name}${profile.cls ? " · " + profile.cls : ""}` : "👤 Nhập tên / lớp";
     $("#keyBtn").textContent = userKey() ? "⚙️ API Key ✓" : "⚙️ API Key";
   }

@@ -3,16 +3,16 @@
 body{margin:0;font-family:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);line-height:1.55;font-size:16px}
 a{color:var(--pri)}
 header.top{background:linear-gradient(120deg,#1e3a8a,#0e7490);color:#fff;position:sticky;top:0;z-index:20;box-shadow:0 2px 12px rgba(0,0,0,.2)}
-.top .in{max-width:1180px;margin:auto;display:flex;align-items:center;gap:14px;padding:10px 16px;flex-wrap:wrap}
+.top .in{max-width:1180px;margin:auto;display:flex;align-items:center;gap:6px 12px;padding:8px 16px;flex-wrap:wrap}
 .brand{font-weight:800;font-size:1.25rem;letter-spacing:.3px;display:flex;align-items:center;gap:8px;cursor:pointer}
 .brand small{display:block;font-weight:400;font-size:.68rem;opacity:.85;letter-spacing:0}
-nav{display:flex;gap:4px;flex-wrap:wrap;flex:1}
+nav{display:flex;gap:4px;order:3;flex:0 0 100%;overflow-x:auto;scrollbar-width:none}nav::-webkit-scrollbar{display:none}
 nav a{color:#e0efff;text-decoration:none;padding:7px 12px;border-radius:999px;font-size:.92rem;white-space:nowrap}
 nav a:hover{background:rgba(255,255,255,.15)}nav a.on{background:#fff;color:#1e3a8a;font-weight:700}
 .who{background:rgba(255,255,255,.16);border:0;color:#fff;padding:7px 12px;border-radius:999px;cursor:pointer;font-size:.88rem}
-.keybox{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.keybox{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto}
 .keylink{background:#fff;color:#dc2626;font-weight:700;font-size:.8rem;padding:4px 10px;border-radius:999px;text-decoration:none;white-space:nowrap}
-@media(max-width:700px){header.top{position:static}.top .in{gap:8px}#whoBtn{margin-left:auto}nav{order:3;flex:0 0 100%;flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px}.keybox{order:4;flex:0 0 100%;justify-content:space-between}}
+@media(max-width:700px){header.top{position:static}#whoBtn{margin-left:auto}.keybox{order:4;flex:0 0 100%;justify-content:space-between;margin-left:0}}
 main{max-width:1180px;margin:0 auto;padding:20px 16px 60px}
 h1{font-size:1.7rem;margin:.2em 0 .4em}h2{font-size:1.3rem;margin:1.2em 0 .5em}h3{font-size:1.08rem;margin:.2em 0 .4em}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh);padding:18px 20px;margin-bottom:16px}
