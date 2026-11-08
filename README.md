@@ -25,7 +25,7 @@ js/theory.js      lý thuyết nền, thuật ngữ, cụm chức năng, quiz
 js/engine.js      bộ máy phân tích, phản hồi cục bộ, thống kê
 js/app.js         giao diện và điều hướng
 api/chat.js       Vercel Serverless Function gọi Gemini hoặc OpenAI (khóa nằm ở biến môi trường)
-server.js         chạy thử trên máy cá nhân
+scripts/dev-server.js  chạy thử trên máy cá nhân (npm start); không đặt tệp server.js ở thư mục gốc vì Vercel sẽ coi đó là máy chủ của cả trang
 scripts/selftest.js  kiểm tra ngân hàng bài tập (npm test)
 vercel.json  package.json  .env.example  .gitignore  .vercelignore
 ```
@@ -41,7 +41,7 @@ Không bao giờ ghi khóa API vào mã nguồn hay đẩy tệp `.env` lên Git
 
 ## Chạy thử trên máy
 
-Cần Node.js ≥ 18: sao chép `.env.example` thành `.env` (điền khóa nếu muốn bật AI), chạy `node server.js`, mở http://localhost:3000. Chạy `npm test` để kiểm tra ngân hàng bài tập.
+Cần Node.js ≥ 18: sao chép `.env.example` thành `.env` (điền khóa nếu muốn bật AI), chạy `npm start`, mở http://localhost:3000. Chạy `npm test` để kiểm tra ngân hàng bài tập.
 
 ## Quyền riêng tư
 
