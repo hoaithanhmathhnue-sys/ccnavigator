@@ -1,0 +1,14 @@
+{
+  "name": "cc-navigator",
+  "version": "1.0.0",
+  "description": "CC-Navigator – Coherence & Cohesion Navigator: trợ lý AI và hệ thống kiểm tra đánh giá cho dạng bài sắp xếp và đọc điền Tiếng Anh 12.",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node scripts/selftest.js"
+  }
+}
