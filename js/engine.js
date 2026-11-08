@@ -123,8 +123,8 @@
       if (!x || typeof x !== "object" || !KINDS.includes(x.kind)) continue;
       if ((x.kind === "answer" || x.kind === "reveal") && !ids.includes(x.exId)) continue;
       if (x.kind === "test" && !Number.isFinite(x.score10)) continue;
-      const rec = { ...x, ts: text(x.ts, 30), student: text(x.student, 40), cls: text(x.cls, 12), tag: hasTag(x.tag) ? x.tag : null };
-      const key = [rec.ts, rec.student, rec.cls, rec.kind, rec.exId, rec.attempt, rec.mode, rec.ctx].join("|");
+      const rec = { ...x, ts: text(x.ts, 30), username: text(x.username, 40), student: text(x.student, 40), cls: text(x.cls, 12), reasoning: text(x.reasoning, 400), tag: hasTag(x.tag) ? x.tag : null };
+      const key = [rec.ts, rec.username, rec.student, rec.cls, rec.kind, rec.exId, rec.attempt, rec.mode, rec.ctx].join("|");
       if (seen.has(key)) continue;
       seen.add(key); out.push(rec);
     }
@@ -135,9 +135,13 @@
     const practice = logs.filter((l) => l.kind === "answer" && l.choice !== -1); /* câu bỏ trống không phải một lượt trả lời */
     const byStudent = {};
     for (const l of logs) {
-      const key = (l.student || "Ẩn danh") + "|" + (l.cls || "");
-      const s = (byStudent[key] = byStudent[key] || { student: l.student || "Ẩn danh", cls: l.cls || "", attempts: 0, correct: 0, tests: [], checklists: 0, breakdown: 0, tags: {}, days: new Set() });
+      const key = ((l.username || l.student || "Ẩn danh").toLowerCase()) + "|" + (l.cls || "");
+      const s = (byStudent[key] = byStudent[key] || { key, username: l.username || "", student: l.student || l.username || "Ẩn danh", cls: l.cls || "", attempts: 0, correct: 0, tests: [], checklists: 0, breakdown: 0, tags: {}, days: new Set(), lastTs: "", items: [] });
+      if (l.student) s.student = l.student;
+      if (l.username && !s.username) s.username = l.username;
       s.days.add((l.ts || "").slice(0, 10));
+      if (l.ts && l.ts > s.lastTs) s.lastTs = l.ts;
+      s.items.push(l);
       if (l.kind === "answer") {
         if (!l.correct && l.tag) s.tags[l.tag] = (s.tags[l.tag] || 0) + 1;
         if (l.mode !== "test") { s.attempts++; if (l.correct) s.correct++; } /* “lượt luyện” không tính câu trong bài kiểm tra */

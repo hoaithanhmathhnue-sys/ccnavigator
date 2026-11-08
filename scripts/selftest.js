@@ -26,5 +26,8 @@ const r = E.analyzeText(["Artificial intelligence is transforming the modern wor
 if (r.pairs.length !== 2 || r.pairs.some((p) => p.verdict === "break")) fail("analyzeText: ví dụ AI phải có liên kết");
 const w = E.analyzeText(["It automates tasks.", "Dogs run fast in parks."]);
 if (!w.warnings.length || w.pairs[0].verdict !== "break") fail("analyzeText: phải cảnh báo đại từ đầu đoạn và gãy mạch");
-console.log(bad ? `${bad} lỗi` : `OK: ${D.EXERCISES.length} bài tập, bộ máy phân tích hoạt động đúng`);
+const GS = require("../js/sheet.js");
+if (!GS.isValidSheetUrl("https://script.google.com/macros/s/AKfycbx123456_abc-DEF/exec") || GS.isValidSheetUrl("https://docs.google.com/spreadsheets/d/123/edit") || GS.isValidSheetUrl("")) fail("isValidSheetUrl: phải kiểm tra đúng định dạng URL Web App Apps Script (/exec)");
+if (!GS.makeLogId(rec).includes("hs1") || !GS.GAS_SCRIPT_TEMPLATE.includes("handleGetTeacherData")) fail("CCN_SHEET: thiếu makeLogId hoặc mẫu Apps Script");
+console.log(bad ? `${bad} lỗi` : `OK: ${D.EXERCISES.length} bài tập, bộ máy phân tích & kết nối Google Sheet hoạt động đúng`);
 process.exit(bad ? 1 : 0);

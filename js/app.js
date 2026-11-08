@@ -1,34 +1,106 @@
 (function () {
   "use strict";
-  const D = window.CCN_DATA, E = window.CCN_ENGINE, AI = window.CCN_AI;
+  const D = window.CCN_DATA, E = window.CCN_ENGINE, AI = window.CCN_AI, GS = window.CCN_SHEET;
   const $ = (s, r = document) => r.querySelector(s);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const L = E.LETTERS;
 
-  /* ---------------- Lưu trữ ---------------- */
+  /* ---------------- Lưu trữ & Kết nối Google Sheet ---------------- */
   const store = {
     get(k, d) { try { const v = localStorage.getItem("ccn_" + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
     set(k, v) { try { localStorage.setItem("ccn_" + k, JSON.stringify(v)); } catch (e) { /* bộ nhớ đầy hoặc bị chặn */ } },
     del(k) { try { localStorage.removeItem("ccn_" + k); } catch (e) { /* bị chặn */ } }
   };
-  let profile = store.get("profile", { name: "", cls: "" });
+
+  /* Tự động nhận link Google Sheet nếu giáo viên gửi link dạng ?gs=https://script.google.com/... */
+  try {
+    const sp = new URLSearchParams(location.search);
+    const gsParam = sp.get("gs") || sp.get("sheet");
+    if (gsParam && GS && GS.isValidSheetUrl(gsParam)) {
+      store.set("sheet_url", GS.normalizeSheetUrl(gsParam));
+    }
+  } catch (e) {}
+
+  let profile = store.get("profile", { username: "", password: "", name: "", cls: "", role: "student" });
+  if (!profile.role) profile.role = "student";
   let logs = store.get("logs", []);
   let progress = store.get("progress", {});
+  const sheetUrl = () => store.get("sheet_url", "");
+  const isTeacher = () => profile.role === "teacher";
+
+  /* Đồng bộ tự động nhật ký của học sinh lên Google Sheet */
+  let syncTimer = null;
+  async function syncLogsToSheet(forceAll) {
+    const url = sheetUrl();
+    if (!url || !GS || !logs.length) return { ok: false, reason: "no_url_or_logs" };
+    const syncedMap = forceAll ? {} : store.get("synced_ids", {});
+    const username = (profile.username || profile.name || "hs").trim();
+    const myLogs = logs
+      .filter((l) => !profile.name || !l.student || l.student === profile.name || l.username === username)
+      .map((l) => {
+        const rec = { ...l, username: l.username || username, student: l.student || profile.name || username, cls: l.cls || profile.cls || "" };
+        rec.id = GS.makeLogId(rec);
+        return rec;
+      });
+    const pending = myLogs.filter((l) => !syncedMap[l.id]);
+    if (!pending.length) {
+      S.syncStatus = `☁️ Đã đồng bộ (${myLogs.length} bản ghi)`;
+      renderNav();
+      return { ok: true, added: 0, total: myLogs.length };
+    }
+    S.syncStatus = "⏳ Đang đồng bộ...";
+    renderNav();
+    try {
+      const res = await GS.callSheet(url, {
+        action: "syncLogs",
+        username,
+        name: profile.name || username,
+        cls: profile.cls || "",
+        logs: pending.slice(-500)
+      });
+      pending.forEach((l) => { syncedMap[l.id] = 1; });
+      store.set("synced_ids", syncedMap);
+      S.syncStatus = `☁️ Đã đồng bộ (${myLogs.length})`;
+      renderNav();
+      return res;
+    } catch (err) {
+      S.syncStatus = "⚠️ Chờ đồng bộ";
+      renderNav();
+      throw err;
+    }
+  }
+
+  function scheduleSync() {
+    if (!sheetUrl()) return;
+    if (syncTimer) clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => { syncLogsToSheet(false).catch(() => {}); }, 800);
+  }
+
   function addLog(entry) {
-    logs.push({ ts: new Date().toISOString(), student: profile.name, cls: profile.cls, ...entry });
+    const rec = {
+      ts: new Date().toISOString(),
+      username: profile.username || profile.name || "",
+      student: profile.name || profile.username || "",
+      cls: profile.cls || "",
+      ...entry
+    };
+    if (GS) rec.id = GS.makeLogId(rec);
+    logs.push(rec);
     if (logs.length > 5000) logs = logs.slice(-5000);
     store.set("logs", logs);
+    scheduleSync();
   }
   const pct = (x) => (x * 100).toFixed(1).replace(".", ",") + "%";
   const num = (x, d = 2) => Number(x).toFixed(d).replace(".", ",");
 
-  /* ---------------- Trạng thái AI ---------------- */
-  const S = { serverAi: false, aiOn: true, cur: 0, filter: "all", rt: {}, view: "home" };
+  /* ---------------- Trạng thái AI & Ứng dụng ---------------- */
+  const S = { serverAi: false, aiOn: true, cur: 0, filter: "all", rt: {}, view: "home", syncStatus: "", sheetUsers: [], sheetName: "", sheetLink: "", clsFilter: "ALL", stuQuery: "" };
   const userKey = () => store.get("gemini_api_key", ""); // khóa riêng của người dùng được ưu tiên hơn khóa máy chủ
   const aiReady = () => !!userKey() || S.serverAi;
   fetch("/api/chat", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).then((j) => { if (j && j.ai) { S.serverAi = true; if (S.view === "practice") render(); } }).catch(() => {}).finally(() => {
     if (!aiReady() && !store.get("key_prompted", false)) { store.set("key_prompted", true); if (!$("#modal").innerHTML) apiKeyModal(); } // chỉ tự hiện một lần
   });
+  if (sheetUrl() && logs.length && !isTeacher()) scheduleSync();
 
   /* ---------------- Tiện ích ---------------- */
   function seeded(id) { let h = 0; for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0; return () => ((h = (h * 1664525 + 1013904223) >>> 0) / 4294967296); }
@@ -47,11 +119,21 @@
   const VIEWS = [["home", "🏠 Trang chủ"], ["guide", "📘 Cẩm nang"], ["practice", "🤖 Trợ lý AI"], ["map", "🗺️ Bản đồ Given–New"], ["breakdown", "🔍 Điểm gãy"], ["test", "📝 Kiểm tra"], ["dash", "📊 Tiến bộ"]];
   function renderNav() {
     const navEl = $("#nav");
-    navEl.innerHTML = VIEWS.map(([k, t]) => `<a href="#${k}" class="${S.view === k ? "on" : ""}">${t}</a>`).join("");
-    const onEl = navEl.querySelector(".on"); // trên điện thoại menu cuộn ngang: giữ mục đang mở trong tầm nhìn
-    if (onEl) navEl.scrollLeft = onEl.offsetLeft - navEl.offsetLeft - (navEl.clientWidth - onEl.offsetWidth) / 2;
-    $("#whoBtn").textContent = profile.name ? `👤 ${profile.name}${profile.cls ? " · " + profile.cls : ""}` : "👤 Nhập tên / lớp";
-    $("#keyBtn").textContent = userKey() ? "⚙️ API Key ✓" : "⚙️ API Key";
+    if (navEl) {
+      navEl.innerHTML = VIEWS.map(([k, t]) => `<a href="#${k}" class="${S.view === k ? "on" : ""}">${t}</a>`).join("");
+      const onEl = navEl.querySelector(".on"); // trên điện thoại menu cuộn ngang: giữ mục đang mở trong tầm nhìn
+      if (onEl) navEl.scrollLeft = onEl.offsetLeft - navEl.offsetLeft - (navEl.clientWidth - onEl.offsetWidth) / 2;
+    }
+    const whoBtn = $("#whoBtn");
+    if (whoBtn) {
+      if (isTeacher()) whoBtn.textContent = `👩‍🏫 GV: ${profile.name || profile.username || "Giáo viên"}`;
+      else if (profile.name || profile.username) whoBtn.textContent = `🎓 ${profile.name || profile.username}${profile.cls ? " · " + profile.cls : ""}`;
+      else whoBtn.textContent = "👤 Đăng nhập (HS / GV)";
+    }
+    const keyBtn = $("#keyBtn");
+    if (keyBtn) keyBtn.textContent = userKey() ? "⚙️ API Key ✓" : "⚙️ API Key";
+    const sheetBtn = $("#sheetBtn");
+    if (sheetBtn) sheetBtn.textContent = sheetUrl() ? (S.syncStatus || "☁️ Google Sheet ✓") : "☁️ Kết nối GG Sheet";
   }
   function render() {
     const v = (location.hash || "#home").slice(1);
@@ -204,7 +286,7 @@
     rt.fb = { src: "Phản hồi cục bộ (theo chuỗi liên kết đã soạn sẵn)", text: local.text, correct: local.correct };
     if (fin) rt.done = true;
     progress[ex.id] = local.correct && !reveal ? "ok" : (progress[ex.id] === "ok" ? "ok" : "bad"); store.set("progress", progress);
-    addLog({ kind: reveal ? "reveal" : "answer", exId: ex.id, etype: ex.type, choice: sel, correct: !reveal && local.correct, tag: local.tag, attempt: rt.attempts, secs: Math.round((Date.now() - rt.t0) / 1000), mode: aiReady() && S.aiOn ? "ai" : "local" });
+    addLog({ kind: reveal ? "reveal" : "answer", exId: ex.id, etype: ex.type, choice: sel, correct: !reveal && local.correct, tag: local.tag, attempt: rt.attempts, secs: Math.round((Date.now() - rt.t0) / 1000), mode: aiReady() && S.aiOn ? "ai" : "local", reasoning: rt.reasoning || "" });
     practice();
     if (aiReady() && S.aiOn && rt.sel != null) {
       const showing = () => S.view === "practice" && D.EXERCISES[S.cur] === ex;
@@ -306,7 +388,7 @@
     if (!T) {
       const hist = logs.filter((l) => l.kind === "test");
       $("#app").innerHTML = `<h1>📝 Bài kiểm tra thực nghiệm ngắn (Diagnostic Test)</h1><div class="card"><p>Gồm <b>10 câu</b> (5 sắp xếp + 5 đọc điền) theo ma trận đề thi tốt nghiệp THPT định dạng mới, thời gian <b>30 phút</b>. Trong khi làm bài, hệ thống <b>không hiện phản hồi</b>; kết quả và phân tích điểm gãy được hiển thị sau khi nộp.</p>
-      ${profile.name ? "" : `<p class="v-weak">Em chưa nhập tên/lớp. <a href="#" data-act="profile">Nhập ngay</a> để giáo viên theo dõi tiến bộ.</p>`}
+      ${profile.name || profile.username ? "" : `<p class="v-weak">Em chưa đăng nhập tên/lớp. <a href="#" data-act="profile">Đăng nhập ngay</a> để tự động lưu kết quả về Google Sheet của giáo viên.</p>`}
       <button class="btn" data-act="starttest">Bắt đầu làm bài</button></div>
       ${hist.length ? `<div class="card"><h3>Lịch sử</h3><div class="scroll"><table><thead><tr><th>Ngày</th><th>Điểm (thang 10)</th><th>Đúng</th><th>Thời gian</th></tr></thead><tbody>${hist.slice().reverse().map((l) => `<tr><td>${esc((l.ts || "").slice(0, 16).replace("T", " "))}</td><td>${num(l.score10, 1)}</td><td>${l.correct}/${l.total}</td><td>${Math.floor(l.secs / 60)}′${String(l.secs % 60).padStart(2, "0")}″</td></tr>`).join("")}</tbody></table></div></div>` : ""}`;
       return;
@@ -340,50 +422,412 @@
     ${checklistCard("test")}<div class="row"><button class="btn" data-act="retest">Làm lại bài</button><a class="btn sec" href="#dash">Xem tiến bộ</a></div>`;
   }
 
-  /* ================= BẢNG TIẾN BỘ + GIÁO VIÊN ================= */
+  /* ================= BẢNG TIẾN BỘ + GIÁO VIÊN (PHÂN QUYỀN QUA GOOGLE SHEET) ================= */
   const csvCell = (v) => { let s = String(v == null ? "" : v); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"'; }; // chặn công thức Excel trong tên học sinh
   function download(name, text, type) { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
   function bars(tags) {
     const keys = Object.keys(D.TAGS), max = Math.max(1, ...keys.map((k) => tags[k] || 0));
     return keys.map((k) => `<div style="margin:8px 0"><div class="row small" style="justify-content:space-between"><span>${tagChip(k)} <span class="muted">${esc(D.TAGS[k].desc)}</span></span><b>${tags[k] || 0}</b></div><div class="bar"><i style="width:${(tags[k] || 0) / max * 100}%;background:${D.TAGS[k].color}"></i></div></div>`).join("");
   }
-  function dash() {
-    S.dtab = S.dtab || "me";
-    const tabs = `<div class="tabs"><button data-act="dtab" data-v="me" class="${S.dtab === "me" ? "on" : ""}">Của em</button><button data-act="dtab" data-v="teacher" class="${S.dtab === "teacher" ? "on" : ""}">Giáo viên (gộp cả lớp)</button></div>`;
-    $("#app").innerHTML = `<h1>📊 Theo dõi tiến bộ</h1>${tabs}<div id="dbody"></div>`;
-    S.dtab === "me" ? dashMe() : dashTeacher();
-  }
-  function dashMe() {
-    const mine = logs.filter((l) => !profile.name || l.student === profile.name || !l.student);
-    const A = E.aggregate(mine), row = A.rows.reduce((a, r) => { a.attempts += r.attempts; a.correct += r.correct; return a; }, { attempts: 0, correct: 0 });
-    const tests = mine.filter((l) => l.kind === "test"), cl = mine.filter((l) => l.kind === "checklist").length, bd = mine.filter((l) => l.kind === "breakdown");
-    $("#dbody").innerHTML = `<div class="grid g4"><div class="card kpi"><b>${row.attempts}</b><span>lượt luyện tập</span></div><div class="card kpi"><b>${row.attempts ? pct(row.correct / row.attempts) : "–"}</b><span>tỷ lệ đúng</span></div><div class="card kpi"><b>${bd.length}</b><span>bài Breakdown</span></div><div class="card kpi"><b>${cl}</b><span>bảng kiểm đã lưu</span></div></div>
-    <div class="grid g2"><div class="card"><h3>Các lỗi tư duy em hay mắc</h3>${bars(A.tags)}<p class="muted small">Tính từ các phương án sai em đã chọn.</p></div>
-    <div class="card"><h3>Điểm các bài kiểm tra</h3>${tests.length ? `<div class="scroll"><table><thead><tr><th>Lần</th><th>Ngày</th><th>Điểm</th></tr></thead><tbody>${tests.map((t, i) => `<tr><td>${i + 1}</td><td>${esc(t.ts.slice(0, 10))}</td><td><b>${num(t.score10, 1)}</b></td></tr>`).join("")}</tbody></table></div>${tests.length > 1 ? `<p>Tiến bộ: <b>${num(tests[tests.length - 1].score10 - tests[0].score10, 1)}</b> điểm so với lần đầu.</p>` : ""}` : `<p class="muted">Chưa có bài kiểm tra nào.</p>`}</div></div>
-    <div class="card"><div class="row"><button class="btn" data-act="exportjson">⬇️ Xuất nhật ký (JSON) gửi giáo viên</button><button class="btn bad" data-act="clearlogs">Xóa dữ liệu trên máy này</button></div><p class="muted small">Giáo viên gộp các tệp JSON của học sinh ở thẻ “Giáo viên”.</p></div>`;
-  }
-  function dashTeacher() {
-    const all = S.imported ? S.imported : [];
-    const merged = E.cleanLogs((S.useLocal ? logs : []).concat(all));
-    const A = E.aggregate(merged);
-    const topTag = (t) => { const e = Object.entries(t).sort((a, b) => b[1] - a[1])[0]; return e ? D.TAGS[e[0]].label : "–"; };
-    const classes = Object.create(null); A.rows.forEach((r) => { const c = (classes[r.cls || "(chưa ghi lớp)"] = classes[r.cls || "(chưa ghi lớp)"] || { n: 0, att: 0, ok: 0, first: [], last: [] }); c.n++; c.att += r.attempts; c.ok += r.correct; if (r.firstTest != null) { c.first.push(r.firstTest); c.last.push(r.lastTest); } });
-    const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
-    const hard = Object.entries(A.byEx).filter(([, v]) => v.n >= 3).sort((a, b) => a[1].ok / a[1].n - b[1].ok / b[1].n).slice(0, 5);
-    $("#dbody").innerHTML = `<div class="card"><h3>Gộp nhật ký của học sinh</h3><p class="muted small">Mỗi học sinh xuất tệp JSON ở thẻ “Của em”. Chọn nhiều tệp để gộp. Dữ liệu chỉ xử lý trên trình duyệt, không gửi lên máy chủ.</p>
-      <div class="row"><input type="file" id="files" accept=".json" multiple><label class="row" style="font-weight:500"><input type="checkbox" id="uselocal" ${S.useLocal ? "checked" : ""} style="width:auto"> Gộp cả nhật ký trên máy này</label><button class="btn sec" data-act="clearimp">Xóa dữ liệu đã nhập</button></div>
-      <p class="small">Đã nhập: <b>${all.length}</b> bản ghi · Tổng đang phân tích: <b>${merged.length}</b></p></div>
-    ${A.rows.length ? `<div class="card"><h3>Tổng hợp theo lớp</h3><div class="scroll"><table><thead><tr><th>Lớp</th><th>Số HS</th><th>Lượt luyện</th><th>Tỷ lệ đúng</th><th>Điểm KT lần đầu (TB)</th><th>Điểm KT gần nhất (TB)</th></tr></thead><tbody>${Object.entries(classes).map(([k, c]) => `<tr><td><b>${esc(k)}</b></td><td>${c.n}</td><td>${c.att}</td><td>${c.att ? pct(c.ok / c.att) : "–"}</td><td>${avg(c.first) == null ? "–" : num(avg(c.first), 2)}</td><td>${avg(c.last) == null ? "–" : num(avg(c.last), 2)}</td></tr>`).join("")}</tbody></table></div></div>
-    <div class="grid g2"><div class="card"><h3>Lỗi tư duy phổ biến của cả nhóm</h3>${bars(A.tags)}</div><div class="card"><h3>Câu khó nhất (≥3 lượt)</h3>${hard.length ? `<table><tbody>${hard.map(([id, v]) => `<tr><td><b>${esc(id)}</b> – ${esc(byId(id) ? byId(id).topic : "")}</td><td>${pct(v.ok / v.n)} đúng (${v.n} lượt)</td></tr>`).join("")}</tbody></table>` : `<p class="muted">Chưa đủ dữ liệu.</p>`}</div></div>
-    <div class="card"><div class="row" style="justify-content:space-between"><h3>Chi tiết từng học sinh</h3><button class="btn" data-act="exportcsv">⬇️ Xuất CSV (Excel)</button></div><div class="scroll"><table><thead><tr><th>Học sinh</th><th>Lớp</th><th>Lượt luyện</th><th>Tỷ lệ đúng</th><th>KT lần đầu → gần nhất</th><th>Breakdown</th><th>Bảng kiểm</th><th>Số ngày học</th><th>Lỗi hay mắc</th></tr></thead><tbody>${A.rows.sort((a, b) => a.cls.localeCompare(b.cls) || a.student.localeCompare(b.student)).map((r) => `<tr><td>${esc(r.student)}</td><td>${esc(r.cls)}</td><td>${r.attempts}</td><td>${r.attempts ? pct(r.accuracy) : "–"}</td><td>${r.firstTest == null ? "–" : num(r.firstTest, 1) + " → " + num(r.lastTest, 1)}</td><td>${r.breakdown}</td><td>${r.checklists}</td><td>${r.days}</td><td>${esc(topTag(r.tags))}</td></tr>`).join("")}</tbody></table></div></div>` : `<div class="card"><p class="muted">Chưa có dữ liệu để thống kê.</p></div>`}`;
-    S._agg = A;
+
+  async function fetchTeacherSheetData(silent) {
+    const url = sheetUrl();
+    if (!url || !isTeacher()) return;
+    const msgEl = $("#t-sync-msg");
+    if (msgEl && !silent) msgEl.textContent = "⏳ Đang tải dữ liệu hoạt động của cả lớp từ Google Sheet…";
+    try {
+      const res = await GS.callSheet(url, {
+        action: "getTeacherData",
+        username: profile.username || "gv",
+        password: profile.password || ""
+      });
+      S.imported = E.cleanLogs(res.logs || []);
+      S.sheetUsers = res.users || [];
+      S.sheetName = res.spreadsheetName || "Google Sheet";
+      S.sheetLink = res.spreadsheetUrl || "";
+      S.lastSheetFetch = new Date().toLocaleTimeString("vi-VN");
+      if (S.view === "dash" && S.dtab === "teacher") dashTeacher(true);
+    } catch (err) {
+      if (msgEl) msgEl.innerHTML = `<span class="v-break">❌ ${esc(err.message)}</span>`;
+    }
   }
 
-  /* ---------------- Hồ sơ ---------------- */
-  function profileModal() {
-    $("#modal").innerHTML = `<div class="modal"><div class="box"><h3>Thông tin học sinh</h3><p class="muted small">Dùng tên/biệt danh hoặc mã số. Chỉ lưu trên thiết bị này.</p>
-    <label>Tên / mã số</label><input type="text" id="pn" value="${esc(profile.name)}" maxlength="40"><label style="display:block;margin-top:8px">Lớp</label><input type="text" id="pc" value="${esc(profile.cls)}" maxlength="12" placeholder="Ví dụ: 12G">
-    <div class="row" style="margin-top:14px"><button class="btn" data-act="saveprofile">Lưu</button><button class="btn ghost" data-act="closemodal">Đóng</button></div></div></div>`;
+  function dash() {
+    if (!S.dtab) S.dtab = isTeacher() ? "teacher" : "me";
+    const tabs = `<div class="tabs"><button data-act="dtab" data-v="me" class="${S.dtab === "me" ? "on" : ""}">🎓 Của em (Học sinh)</button><button data-act="dtab" data-v="teacher" class="${S.dtab === "teacher" ? "on" : ""}">👩‍🏫 Giáo viên (Quản lý cả lớp)${isTeacher() ? " ✓" : " 🔒"}</button></div>`;
+    $("#app").innerHTML = `<h1>📊 Theo dõi tiến bộ &amp; Quản lý học tập</h1>${tabs}<div id="dbody"></div>`;
+    S.dtab === "me" ? dashMe() : dashTeacher();
+  }
+
+  function dashMe() {
+    const mine = logs.filter((l) => !profile.name || l.student === profile.name || l.username === profile.username || !l.student);
+    const A = E.aggregate(mine), row = A.rows.reduce((a, r) => { a.attempts += r.attempts; a.correct += r.correct; return a; }, { attempts: 0, correct: 0 });
+    const tests = mine.filter((l) => l.kind === "test"), cl = mine.filter((l) => l.kind === "checklist").length, bd = mine.filter((l) => l.kind === "breakdown");
+    const hasSheet = !!sheetUrl();
+    $("#dbody").innerHTML = `
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <b>🎓 Học sinh:</b> ${esc(profile.name || "Chưa nhập tên")} ${profile.cls ? `<span class="chip">Lớp ${esc(profile.cls)}</span>` : ""} ${profile.username ? `<span class="muted small">(Mã: ${esc(profile.username)})</span>` : ""}
+          <div class="small muted" style="margin-top:4px">${hasSheet ? `☁️ Đã liên kết Google Sheet của Giáo viên · Trạng thái: <b>${esc(S.syncStatus || "Tự động đồng bộ")}</b>` : `⚠️ Chưa liên kết Google Sheet – dữ liệu hiện chỉ lưu trên thiết bị này.`}</div>
+        </div>
+        <div class="row">
+          <button class="btn sec" data-act="profile">✏️ Đổi thông tin / Vai trò</button>
+          ${hasSheet ? `<button class="btn ok" data-act="syncnow">☁️ Đồng bộ lên Google Sheet ngay</button>` : `<button class="btn" data-act="sheetcfg">☁️ Kết nối Google Sheet</button>`}
+        </div>
+      </div>
+      <div id="sync-me-msg" class="small" style="margin-top:6px"></div>
+    </div>
+    <div class="grid g4"><div class="card kpi"><b>${row.attempts}</b><span>lượt luyện tập</span></div><div class="card kpi"><b>${row.attempts ? pct(row.correct / row.attempts) : "–"}</b><span>tỷ lệ đúng</span></div><div class="card kpi"><b>${bd.length}</b><span>bài Breakdown</span></div><div class="card kpi"><b>${cl}</b><span>bảng kiểm đã lưu</span></div></div>
+    <div class="grid g2"><div class="card"><h3>Các lỗi tư duy em hay mắc</h3>${bars(A.tags)}<p class="muted small">Tính từ các phương án sai em đã chọn.</p></div>
+    <div class="card"><h3>Điểm các bài kiểm tra</h3>${tests.length ? `<div class="scroll"><table><thead><tr><th>Lần</th><th>Ngày</th><th>Điểm</th></tr></thead><tbody>${tests.map((t, i) => `<tr><td>${i + 1}</td><td>${esc(t.ts.slice(0, 10))}</td><td><b>${num(t.score10, 1)}</b></td></tr>`).join("")}</tbody></table></div>${tests.length > 1 ? `<p>Tiến bộ: <b>${num(tests[tests.length - 1].score10 - tests[0].score10, 1)}</b> điểm so với lần đầu.</p>` : ""}` : `<p class="muted">Chưa có bài kiểm tra nào.</p>`}</div></div>
+    <div class="card"><div class="row"><button class="btn sec" data-act="exportjson">⬇️ Xuất nhật ký (JSON) dự phòng</button><button class="btn bad" data-act="clearlogs">Xóa dữ liệu trên máy này</button></div><p class="muted small">Khi đã kết nối Google Sheet, mọi hoạt động luyện tập và kiểm tra của em được gửi tự động về bảng tính của giáo viên.</p></div>`;
+  }
+
+  function dashTeacher(skipAutoFetch) {
+    /* Kiểm tra phân quyền Giáo viên: Nếu đã kết nối Google Sheet mà người dùng chưa đăng nhập quyền Giáo viên thì yêu cầu xác thực */
+    if (!isTeacher()) {
+      $("#dbody").innerHTML = `<div class="card">
+        <h3>🔒 Khu vực dành riêng cho Giáo viên</h3>
+        <p class="muted">Để xem hoạt động học tập của cả lớp và quản lý phân quyền qua Google Sheet, thầy/cô vui lòng đăng nhập bằng tài khoản <b>Giáo viên</b> (được khai báo trong trang tính <code>TaiKhoan</code> trên Google Sheet).</p>
+        <div class="row" style="margin-top:12px">
+          <button class="btn" data-act="teacherlogin">👩‍🏫 Đăng nhập quyền Giáo viên</button>
+          <button class="btn sec" data-act="sheetcfg">☁️ Hướng dẫn &amp; Cài đặt Google Sheet</button>
+        </div>
+      </div>`;
+      return;
+    }
+
+    if (sheetUrl() && !skipAutoFetch && !S.lastSheetFetch) {
+      fetchTeacherSheetData(false);
+    }
+
+    const all = S.imported ? S.imported : [];
+    const mergedAll = E.cleanLogs((S.useLocal ? logs : []).concat(all));
+    const AAll = E.aggregate(mergedAll);
+
+    const allClasses = [...new Set(AAll.rows.map((r) => r.cls || "(chưa ghi lớp)").concat(S.sheetUsers.filter((u) => u.role === "student" && u.cls).map((u) => u.cls)))].sort();
+    const filteredLogs = mergedAll.filter((l) => {
+      const c = l.cls || "(chưa ghi lớp)";
+      if (S.clsFilter !== "ALL" && c !== S.clsFilter) return false;
+      if (S.stuQuery) {
+        const q = S.stuQuery.toLowerCase();
+        const matchName = (l.student || "").toLowerCase().includes(q) || (l.username || "").toLowerCase().includes(q);
+        if (!matchName) return false;
+      }
+      return true;
+    });
+    const A = E.aggregate(filteredLogs);
+
+    /* Gộp thêm học sinh đã có tài khoản trong trang tính TaiKhoan nhưng chưa làm bài để giáo viên nắm được em nào chưa học */
+    const rowMap = new Map();
+    A.rows.forEach((r) => rowMap.set(r.key, r));
+    S.sheetUsers.filter((u) => u.role === "student").forEach((u) => {
+      const c = u.cls || "";
+      if (S.clsFilter !== "ALL" && (c || "(chưa ghi lớp)") !== S.clsFilter) return;
+      if (S.stuQuery) {
+        const q = S.stuQuery.toLowerCase();
+        if (!(u.name || "").toLowerCase().includes(q) && !(u.username || "").toLowerCase().includes(q)) return;
+      }
+      const k = u.username.toLowerCase() + "|" + c;
+      if (!rowMap.has(k)) {
+        rowMap.set(k, { key: k, username: u.username, student: u.name || u.username, cls: c, attempts: 0, correct: 0, accuracy: 0, tests: [], firstTest: null, lastTest: null, bestTest: null, checklists: 0, breakdown: 0, tags: {}, days: 0, lastTs: u.lastActive || "", items: [] });
+      }
+    });
+    const displayRows = [...rowMap.values()];
+
+    const topTag = (t) => { const e = Object.entries(t).sort((a, b) => b[1] - a[1])[0]; return e ? D.TAGS[e[0]].label : "–"; };
+    const classes = Object.create(null);
+    AAll.rows.forEach((r) => {
+      const c = (classes[r.cls || "(chưa ghi lớp)"] = classes[r.cls || "(chưa ghi lớp)"] || { n: 0, att: 0, ok: 0, first: [], last: [] });
+      c.n++; c.att += r.attempts; c.ok += r.correct;
+      if (r.firstTest != null) { c.first.push(r.firstTest); c.last.push(r.lastTest); }
+    });
+    const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+    const hard = Object.entries(A.byEx).filter(([, v]) => v.n >= 3).sort((a, b) => a[1].ok / a[1].n - b[1].ok / b[1].n).slice(0, 5);
+
+    $("#dbody").innerHTML = `
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <h3>☁️ Trung tâm Quản lý Lớp học qua Google Sheet</h3>
+          <p class="small muted" id="t-sync-msg">
+            ${sheetUrl() ? `Đã kết nối bảng tính: <b>${esc(S.sheetName || "Google Sheet")}</b> ${S.lastSheetFetch ? `(Cập nhật lúc ${esc(S.lastSheetFetch)})` : ""}` : `Chưa cài đặt URL Web App Google Sheet. Bấm "Cài đặt & Hướng dẫn Google Sheet" để kết nối.`}
+          </p>
+        </div>
+        <div class="row">
+          ${sheetUrl() ? `<button class="btn ok" data-act="refreshsheet">🔄 Tải dữ liệu mới nhất từ GG Sheet</button>` : ""}
+          ${S.sheetLink ? `<a class="btn sec" href="${esc(S.sheetLink)}" target="_blank" rel="noopener">📗 Mở Google Sheet gốc</a>` : `<a class="btn sec" href="https://docs.google.com/spreadsheets/u/0/" target="_blank" rel="noopener">📗 Mở Google Sheets</a>`}
+          ${sheetUrl() ? `<button class="btn sec" data-act="manageusers">👥 Phân quyền &amp; Tài khoản (${S.sheetUsers.length})</button>` : ""}
+          <button class="btn ghost" data-act="sheetcfg">⚙️ Cài đặt &amp; Hướng dẫn GG Sheet</button>
+        </div>
+      </div>
+      <hr style="border:0;border-top:1px solid var(--line);margin:12px 0">
+      <details>
+        <summary class="small muted" style="cursor:pointer">📂 Tùy chọn nâng cao: Gộp thêm tệp nhật ký JSON thủ công (Offline)</summary>
+        <div class="row" style="margin-top:8px"><input type="file" id="files" accept=".json" multiple><label class="row" style="font-weight:500"><input type="checkbox" id="uselocal" ${S.useLocal ? "checked" : ""} style="width:auto"> Gộp cả nhật ký trên máy này</label><button class="btn sec" data-act="clearimp">Xóa dữ liệu đã tải</button></div>
+      </details>
+      <p class="small" style="margin-bottom:0">Tổng bản ghi từ Google Sheet / JSON: <b>${all.length}</b> · Đang lọc hiển thị: <b>${filteredLogs.length}</b> hoạt động của <b>${displayRows.length}</b> học sinh.</p>
+    </div>
+
+    ${displayRows.length || AAll.rows.length ? `
+    <div class="card"><h3>Tổng hợp theo lớp</h3><div class="scroll"><table><thead><tr><th>Lớp</th><th>Số HS có hoạt động</th><th>Lượt luyện</th><th>Tỷ lệ đúng</th><th>Điểm KT lần đầu (TB)</th><th>Điểm KT gần nhất (TB)</th></tr></thead><tbody>${Object.entries(classes).map(([k, c]) => `<tr><td><b>${esc(k)}</b></td><td>${c.n}</td><td>${c.att}</td><td>${c.att ? pct(c.ok / c.att) : "–"}</td><td>${avg(c.first) == null ? "–" : num(avg(c.first), 2)}</td><td>${avg(c.last) == null ? "–" : num(avg(c.last), 2)}</td></tr>`).join("")}</tbody></table></div></div>
+    <div class="grid g2"><div class="card"><h3>Lỗi tư duy phổ biến của nhóm đang chọn</h3>${bars(A.tags)}</div><div class="card"><h3>Câu khó nhất (≥3 lượt)</h3>${hard.length ? `<table><tbody>${hard.map(([id, v]) => `<tr><td><b>${esc(id)}</b> – ${esc(byId(id) ? byId(id).topic : "")}</td><td>${pct(v.ok / v.n)} đúng (${v.n} lượt)</td></tr>`).join("")}</tbody></table>` : `<p class="muted">Chưa đủ dữ liệu (cần ít nhất 3 lượt làm).</p>`}</div></div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:10px">
+        <h3>📋 Chi tiết hoạt động từng học sinh</h3>
+        <div class="row">
+          <select id="clsFilter" style="width:auto">
+            <option value="ALL" ${S.clsFilter === "ALL" ? "selected" : ""}>Tất cả các lớp</option>
+            ${allClasses.map((c) => `<option value="${esc(c)}" ${S.clsFilter === c ? "selected" : ""}>Lớp: ${esc(c)}</option>`).join("")}
+          </select>
+          <input type="search" id="stuSearch" placeholder="Tìm tên hoặc mã HS..." value="${esc(S.stuQuery)}" style="width:200px">
+          <button class="btn" data-act="exportcsv">⬇️ Xuất CSV (Excel)</button>
+        </div>
+      </div>
+      <div class="scroll"><table><thead><tr><th>Mã HS</th><th>Học sinh</th><th>Lớp</th><th>Lượt luyện</th><th>Tỷ lệ đúng</th><th>KT lần đầu → gần nhất</th><th>Breakdown</th><th>Bảng kiểm</th><th>Số ngày</th><th>Lỗi hay mắc</th><th>Hoạt động gần nhất</th><th>Chi tiết</th></tr></thead><tbody>${displayRows.sort((a, b) => (a.cls || "").localeCompare(b.cls || "") || a.student.localeCompare(b.student)).map((r) => `<tr><td><code>${esc(r.username || "–")}</code></td><td><b>${esc(r.student)}</b></td><td>${esc(r.cls)}</td><td>${r.attempts}</td><td>${r.attempts ? pct(r.accuracy) : "–"}</td><td>${r.firstTest == null ? "–" : num(r.firstTest, 1) + " → " + num(r.lastTest, 1)}</td><td>${r.breakdown}</td><td>${r.checklists}</td><td>${r.days}</td><td>${esc(topTag(r.tags))}</td><td class="small muted">${r.lastTs ? esc(r.lastTs.slice(0, 16).replace("T", " ")) : '<span class="v-weak">Chưa học</span>'}</td><td><button class="btn sec" style="padding:4px 10px;font-size:.8rem" data-act="stuview" data-v="${esc(r.key)}">👁️ Xem</button></td></tr>`).join("")}</tbody></table></div>
+    </div>` : `<div class="card"><p class="muted">Chưa có dữ liệu học tập. Hãy bấm <b>🔄 Tải dữ liệu mới nhất từ GG Sheet</b> hoặc chia sẻ link lớp học cho học sinh làm bài.</p></div>`}`;
+    S._agg = { ...A, rows: displayRows };
+  }
+
+  /* Xem chi tiết nhật ký từng câu & lời giải thích Bước 4 của 1 học sinh */
+  function studentDetailModal(stuKey) {
+    const r = S._agg && S._agg.rows ? S._agg.rows.find((x) => x.key === stuKey) : null;
+    if (!r) return;
+    const items = (r.items || []).slice().reverse();
+    const kindName = { answer: "Luyện tập / Trả lời", reveal: "Xem đáp án", test: "Nộp bài kiểm tra 30p", breakdown: "Điểm gãy (Breakdown)", checklist: "Bảng kiểm (Checklist)" };
+    $("#modal").innerHTML = `<div class="modal"><div class="box wide">
+      <div class="row" style="justify-content:space-between">
+        <h3>🎓 Hồ sơ hoạt động: ${esc(r.student)} ${r.cls ? `(${esc(r.cls)})` : ""}</h3>
+        <button class="btn ghost" data-act="closemodal">Đóng</button>
+      </div>
+      <p class="small muted">Mã HS: <b>${esc(r.username || "–")}</b> · Lượt luyện: <b>${r.attempts}</b> (Đúng ${r.attempts ? pct(r.accuracy) : "0%"}) · Điểm KT: <b>${r.firstTest == null ? "Chưa làm" : num(r.firstTest, 1) + " → " + num(r.lastTest, 1)}</b></p>
+      ${items.length ? `<div class="scroll" style="max-height:380px"><table><thead><tr><th>Thời gian</th><th>Hoạt động</th><th>Bài</th><th>Kết quả</th><th>Lời giải thích bằng chứng (Bước 4) / Chi tiết</th></tr></thead><tbody>
+        ${items.map((l) => {
+          let resTxt = "–";
+          if (l.kind === "answer") resTxt = l.correct ? "✅ Đúng" : `❌ Sai${l.tag && D.TAGS[l.tag] ? " (" + D.TAGS[l.tag].label + ")" : ""}`;
+          else if (l.kind === "test") resTxt = `<b>${num(l.score10, 1)} điểm</b> (${l.correct}/${l.total})`;
+          else if (l.kind === "breakdown") resTxt = `Đúng ${l.hit}/${l.truth} điểm gãy`;
+          else if (l.kind === "checklist") resTxt = `${l.done}/4 tiêu chí`;
+          return `<tr><td class="small muted">${esc((l.ts || "").slice(0, 16).replace("T", " "))}</td><td>${esc(kindName[l.kind] || l.kind)}${l.mode === "test" ? " (trong bài KT)" : ""}</td><td><b>${esc(l.exId || "–")}</b></td><td>${resTxt}</td><td>${esc(l.reasoning || "")}</td></tr>`;
+        }).join("")}
+      </tbody></table></div>` : `<p class="muted">Học sinh này chưa có hoạt động nào được ghi nhận.</p>`}
+    </div></div>`;
+  }
+
+  /* Quản lý danh sách Tài khoản & Phân quyền trực tiếp từ ứng dụng lên Google Sheet */
+  function manageUsersModal(msg) {
+    $("#modal").innerHTML = `<div class="modal"><div class="box wide">
+      <div class="row" style="justify-content:space-between">
+        <h3>👥 Quản lý Tài khoản &amp; Phân quyền trên Google Sheet</h3>
+        <button class="btn ghost" data-act="closemodal">Đóng</button>
+      </div>
+      <p class="small muted">Danh sách này đồng bộ trực tiếp với trang tính <code>TaiKhoan</code> trên Google Sheet. Học sinh mới khi đăng nhập lần đầu cũng sẽ tự động được ghi danh vào bảng này.</p>
+      <div class="card" style="background:#f8fafc;padding:12px">
+        <b>➕ Thêm / Cập nhật tài khoản (Học sinh hoặc Giáo viên):</b>
+        <div class="grid g4" style="margin-top:8px;gap:8px">
+          <div><label class="small">Mã đăng nhập</label><input type="text" id="mu-user" placeholder="VD: hs02 hoặc gv2"></div>
+          <div><label class="small">Mật khẩu</label><input type="text" id="mu-pass" placeholder="Mặc định: 123456" value="123456"></div>
+          <div><label class="small">Họ và tên</label><input type="text" id="mu-name" placeholder="VD: Trần Thị Bình"></div>
+          <div><label class="small">Lớp &amp; Vai trò</label>
+            <div class="row" style="gap:4px">
+              <input type="text" id="mu-cls" placeholder="12G" style="width:48%">
+              <select id="mu-role" style="width:48%"><option value="student">Học sinh</option><option value="teacher">Giáo viên</option></select>
+            </div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:8px"><button class="btn" data-act="saveuser">💾 Lưu lên Google Sheet</button><span id="mu-msg" class="small">${msg ? esc(msg) : ""}</span></div>
+      </div>
+      <div class="scroll" style="max-height:280px"><table><thead><tr><th>Mã đăng nhập</th><th>Họ và tên</th><th>Lớp</th><th>Vai trò</th><th>Hoạt động gần nhất</th></tr></thead><tbody>
+        ${S.sheetUsers.length ? S.sheetUsers.map((u) => `<tr><td><code>${esc(u.username)}</code></td><td><b>${esc(u.name)}</b></td><td>${esc(u.cls)}</td><td><span class="chip" style="background:${u.role === "teacher" ? "#fef3c7;color:#92400e" : "#dbeafe;color:#1e40af"}">${u.role === "teacher" ? "👩‍🏫 Giáo viên" : "🎓 Học sinh"}</span></td><td class="small muted">${esc((u.lastActive || "").slice(0, 16).replace("T", " "))}</td></tr>`).join("") : `<tr><td colspan="5" class="muted">Chưa tải danh sách tài khoản. Hãy bấm "Tải dữ liệu mới nhất từ GG Sheet".</td></tr>`}
+      </tbody></table></div>
+    </div></div>`;
+  }
+
+  /* ---------------- Hồ sơ & Đăng nhập Phân quyền (Học sinh / Giáo viên) ---------------- */
+  function profileModal(forceRole) {
+    S.loginRole = forceRole || profile.role || "student";
+    const isT = S.loginRole === "teacher";
+    $("#modal").innerHTML = `<div class="modal"><div class="box">
+      <h3>👤 Đăng nhập &amp; Phân quyền</h3>
+      <div class="tabs" style="margin-top:8px">
+        <button type="button" data-act="switchrole" data-v="student" class="${!isT ? "on" : ""}">🎓 Học sinh</button>
+        <button type="button" data-act="switchrole" data-v="teacher" class="${isT ? "on" : ""}">👩‍🏫 Giáo viên</button>
+      </div>
+      ${!isT ? `
+        <p class="muted small">Nhập thông tin của em để hệ thống lưu tiến bộ và tự động gửi bài làm về Google Sheet của giáo viên.</p>
+        <label>Họ và tên học sinh</label>
+        <input type="text" id="pn" value="${esc(profile.role === "student" ? profile.name : "")}" maxlength="40" placeholder="Ví dụ: Nguyễn Văn An">
+        <div class="grid g2" style="margin-top:8px;gap:10px">
+          <div><label>Lớp</label><input type="text" id="pc" value="${esc(profile.role === "student" ? profile.cls : "")}" maxlength="12" placeholder="Ví dụ: 12G"></div>
+          <div><label>Mã HS / Tên đăng nhập</label><input type="text" id="pu" value="${esc(profile.role === "student" ? profile.username : "")}" maxlength="30" placeholder="Ví dụ: hs01 (tùy chọn)"></div>
+        </div>
+        <label style="display:block;margin-top:8px">Mật khẩu / Mã PIN (nếu giáo viên cấp)</label>
+        <input type="password" id="pp" value="${esc(profile.role === "student" ? profile.password || "" : "")}" maxlength="30" placeholder="Để trống hoặc nhập mật khẩu (VD: 123456)">
+      ` : `
+        <p class="muted small">Đăng nhập bằng tài khoản Giáo viên trong trang tính <code>TaiKhoan</code> trên Google Sheet (mặc định: tài khoản <b>gv</b>, mật khẩu <b>123456</b>).</p>
+        <label>Tài khoản Giáo viên (username)</label>
+        <input type="text" id="pu" value="${esc(profile.role === "teacher" ? profile.username : "gv")}" maxlength="30" placeholder="gv">
+        <label style="display:block;margin-top:8px">Mật khẩu Giáo viên</label>
+        <input type="password" id="pp" value="${esc(profile.role === "teacher" ? profile.password || "" : "")}" maxlength="30" placeholder="Nhập mật khẩu (mặc định: 123456)">
+      `}
+      <div id="pmsg" class="small" style="margin-top:8px"></div>
+      <div class="row" style="margin-top:14px">
+        <button class="btn" data-act="saveprofile">${isT ? "👩‍🏫 Đăng nhập Giáo viên" : "🎓 Lưu &amp; Bắt đầu học"}</button>
+        ${profile.name || profile.username ? `<button class="btn bad" data-act="logout">Đăng xuất</button>` : ""}
+        <button class="btn ghost" data-act="closemodal">Đóng</button>
+      </div>
+      <hr style="border:0;border-top:1px solid var(--line);margin:12px 0">
+      <div class="row" style="justify-content:space-between">
+        <span class="small muted">${sheetUrl() ? "☁️ Đã kết nối Google Sheet" : "⚠️ Chưa gắn link Google Sheet"}</span>
+        <a href="#" class="small" data-act="sheetcfg">⚙️ Cài đặt kết nối Google Sheet</a>
+      </div>
+    </div></div>`;
+  }
+
+  async function doSaveProfile(btn) {
+    const role = S.loginRole || "student";
+    const msgEl = $("#pmsg");
+    const showMsg = (txt, ok) => { if (msgEl) { msgEl.textContent = txt; msgEl.className = "small " + (ok ? "v-strong" : "v-break"); } };
+
+    if (role === "teacher") {
+      const username = ($("#pu").value || "").trim().toLowerCase();
+      const password = ($("#pp").value || "").trim();
+      if (!username || !password) { showMsg("Vui lòng nhập tài khoản và mật khẩu Giáo viên.", false); return; }
+      if (sheetUrl()) {
+        btn.disabled = true; showMsg("⏳ Đang xác thực quyền Giáo viên với Google Sheet…", true);
+        try {
+          const res = await GS.callSheet(sheetUrl(), { action: "login", role: "teacher", username, password });
+          profile = { username: res.user.username, password, name: res.user.name || "Giáo viên", cls: res.user.cls || "ALL", role: "teacher" };
+          store.set("profile", profile);
+          S.dtab = "teacher"; S.lastSheetFetch = null;
+          $("#modal").innerHTML = ""; location.hash = "#dash"; render();
+        } catch (err) {
+          showMsg("❌ " + err.message, false);
+        } finally {
+          if (btn.isConnected) btn.disabled = false;
+        }
+      } else {
+        /* Cho phép đăng nhập mặc định cục bộ nếu chưa gắn Google Sheet để xem thử */
+        if (username === "gv" && password === "123456") {
+          profile = { username: "gv", password, name: "Giáo viên bộ môn", cls: "ALL", role: "teacher" };
+          store.set("profile", profile);
+          S.dtab = "teacher"; $("#modal").innerHTML = ""; location.hash = "#dash"; render();
+        } else {
+          showMsg("Chưa kết nối Google Sheet. Tài khoản thử nghiệm mặc định là 'gv' / mật khẩu '123456'.", false);
+        }
+      }
+      return;
+    }
+
+    /* Đăng nhập Học sinh */
+    const name = ($("#pn").value || "").trim();
+    const cls = ($("#pc").value || "").trim().toUpperCase();
+    const rawUser = ($("#pu").value || "").trim().toLowerCase();
+    const password = ($("#pp").value || "").trim();
+    if (!name && !rawUser) { showMsg("Em vui lòng nhập Họ và tên hoặc Mã học sinh.", false); return; }
+    const username = rawUser || name.toLowerCase().replace(/\s+/g, "");
+
+    if (sheetUrl()) {
+      btn.disabled = true; showMsg("⏳ Đang kết nối và đồng bộ tài khoản lên Google Sheet…", true);
+      try {
+        const res = await GS.callSheet(sheetUrl(), { action: "login", role: "student", username, password, name: name || username, cls });
+        profile = { username: res.user.username, password, name: res.user.name, cls: res.user.cls, role: "student" };
+        store.set("profile", profile);
+        $("#modal").innerHTML = ""; render();
+        syncLogsToSheet(true).catch(() => {});
+        return;
+      } catch (err) {
+        showMsg("❌ " + err.message, false);
+        if (btn.isConnected) btn.disabled = false;
+        return;
+      }
+    }
+
+    profile = { username, password, name: name || username, cls, role: "student" };
+    store.set("profile", profile);
+    $("#modal").innerHTML = ""; render();
+  }
+
+  /* ---------------- Cài đặt & Hướng dẫn Kết nối Google Sheet ---------------- */
+  function sheetConfigModal(msg) {
+    const curUrl = sheetUrl();
+    const shareLink = curUrl ? `${location.origin}${location.pathname}?gs=${encodeURIComponent(curUrl)}` : "";
+    $("#modal").innerHTML = `<div class="modal"><div class="box wide">
+      <div class="row" style="justify-content:space-between">
+        <h3>☁️ Liên kết Phân quyền &amp; Theo dõi Học sinh qua Google Sheet</h3>
+        <button class="btn ghost" data-act="closemodal">Đóng</button>
+      </div>
+      <p class="small muted">Kết nối trực tiếp ứng dụng với bảng tính trên <a href="https://docs.google.com/spreadsheets/u/0/" target="_blank" rel="noopener">Google Sheets</a> để quản lý tài khoản Học sinh / Giáo viên và tự động thu thập toàn bộ hoạt động học tập theo thời gian thực.</p>
+
+      <label for="gs-url">🔗 Địa chỉ Web App URL của Google Sheet (Apps Script)</label>
+      <div class="keyrow" style="margin-top:4px">
+        <input type="text" id="gs-url" placeholder="https://script.google.com/macros/s/.../exec" value="${esc(curUrl)}">
+        <button class="btn" data-act="savesheet">Lưu &amp; Kết nối</button>
+        <button class="btn sec" data-act="testsheet">Kiểm tra</button>
+        ${curUrl ? `<button class="btn bad" data-act="clearsheet">Gỡ</button>` : ""}
+      </div>
+      <div id="gs-msg" class="small" style="margin-top:6px">${msg ? esc(msg) : ""}</div>
+
+      ${curUrl ? `
+      <div class="card" style="background:#ecfdf5;border-color:#a7f3d0;margin-top:12px;padding:12px">
+        <b>📲 Link Lớp học dành cho Học sinh (Tự động gắn Google Sheet):</b>
+        <p class="small muted" style="margin:4px 0">Giáo viên sao chép link dưới đây gửi vào nhóm Zalo/Lớp học. Khi học sinh bấm vào link này, máy của học sinh sẽ <b>tự động kết nối</b> vào Google Sheet của giáo viên mà không cần cài đặt gì thêm!</p>
+        <div class="keyrow"><input type="text" id="gs-share" readonly value="${esc(shareLink)}"><button class="btn ok" data-act="copyshare">📋 Copy Link gửi HS</button></div>
+      </div>` : ""}
+
+      <details style="margin-top:14px" ${curUrl ? "" : "open"}>
+        <summary style="cursor:pointer;font-weight:700;color:var(--pri)">📖 Hướng dẫn 4 bước tạo Google Sheet cho Giáo viên (chỉ mất 2 phút)</summary>
+        <div style="margin-top:10px;font-size:.9rem">
+          <ol style="padding-left:20px;margin:6px 0">
+            <li>Mở <a href="https://docs.google.com/spreadsheets/u/0/" target="_blank" rel="noopener"><b>Google Sheets</b></a>, bấm <b>Trống (+)</b> để tạo một bảng tính mới và đặt tên (ví dụ: <i>CC-Navigator - Lớp 12</i>).</li>
+            <li>Trên thanh menu của Google Sheet, chọn <b>Tiện ích mở rộng (Extensions)</b> → <b>Apps Script</b>.</li>
+            <li>Xóa dòng chữ <code>function myFunction() {}</code> mặc định, bấm nút <b>📋 Sao chép mã Apps Script</b> dưới đây rồi dán vào và bấm biểu tượng 💾 <b>Lưu (Ctrl+S)</b>.</li>
+            <li>Ở góc trên bên phải Apps Script, bấm nút màu xanh <b>Triển khai (Deploy)</b> → <b>Triển khai mới (New deployment)</b>:
+              <ul>
+                <li>Bấm biểu tượng ⚙️ (Chọn loại) → chọn <b>Ứng dụng web (Web app)</b>.</li>
+                <li>Thực thi dưới dạng (Execute as): chọn <b>Tôi (Me)</b>.</li>
+                <li>Ai có quyền truy cập (Who has access): chọn <b>Bất kỳ ai (Anyone)</b> <i>(Bắt buộc để học sinh gửi bài không bị chặn)</i>.</li>
+                <li>Bấm <b>Triển khai (Deploy)</b> → <b>Ủy quyền truy cập (Authorize access)</b> → chọn tài khoản Google → bấm <b>Advanced (Nâng cao)</b> → <b>Go to Untitled project (unsafe)</b> → <b>Allow (Cho phép)</b>.</li>
+                <li>Sao chép <b>URL ứng dụng web (Web app URL)</b> có đuôi <code>/exec</code> và dán vào ô phía trên!</li>
+              </ul>
+            </li>
+          </ol>
+          <div class="row" style="justify-content:space-between;margin:8px 0 4px">
+            <b>Mã nguồn Google Apps Script (Tự động tạo 3 sheet: <code>TaiKhoan</code>, <code>NhatKy</code>, <code>TongHop</code>):</b>
+            <button class="btn sec" data-act="copygas" style="padding:5px 12px;font-size:.82rem">📋 Sao chép mã Apps Script</button>
+          </div>
+          <pre class="codebox" id="gas-code">${esc(GS ? GS.GAS_SCRIPT_TEMPLATE : "")}</pre>
+          <p class="small muted">💡 Mặc định bảng <code>TaiKhoan</code> sẽ tạo sẵn tài khoản Giáo viên là <b>gv</b> / mật khẩu <b>123456</b>. Thầy/cô có thể đổi mật khẩu hoặc thêm danh sách lớp trực tiếp trên các dòng của Google Sheet.</p>
+        </div>
+      </details>
+    </div></div>`;
+  }
+
+  function gsMsg(text, ok) { const m = $("#gs-msg"); if (m) { m.textContent = text; m.className = "small " + (ok ? "v-strong" : "v-break"); } }
+  async function testOrSaveSheet(save, btn) {
+    const inp = $("#gs-url");
+    const url = inp ? GS.normalizeSheetUrl(inp.value) : "";
+    if (!url) { gsMsg("Vui lòng dán URL ứng dụng web (Apps Script Web App URL).", false); return; }
+    if (!GS.isValidSheetUrl(url)) { gsMsg("URL chưa đúng định dạng. URL phải bắt đầu bằng https://script.google.com/macros/s/... và kết thúc bằng /exec", false); return; }
+    btn.disabled = true;
+    gsMsg("⏳ Đang kiểm tra kết nối và khởi tạo 3 trang tính (TaiKhoan, NhatKy, TongHop)…", true);
+    try {
+      const res = await GS.callSheet(url, { action: "ping" });
+      store.set("sheet_url", url);
+      S.sheetName = res.spreadsheetName || "Google Sheet";
+      renderNav();
+      if (save) {
+        sheetConfigModal(`✅ Đã kết nối thành công với bảng tính "${S.sheetName}"! Hệ thống đã sẵn sàng đồng bộ.`);
+        if (logs.length && !isTeacher()) scheduleSync();
+      } else {
+        gsMsg(`✅ Kết nối thành công với bảng tính "${S.sheetName}"! Bấm "Lưu & Kết nối" để hoàn tất.`, true);
+      }
+    } catch (err) {
+      gsMsg("❌ " + err.message, false);
+    } finally {
+      if (btn.isConnected) btn.disabled = false;
+    }
   }
 
   /* ---------------- Cài đặt API Key ---------------- */
@@ -429,6 +873,33 @@
     if (t.tagName === "A") e.preventDefault();
     switch (a) {
       case "profile": profileModal(); break;
+      case "teacherlogin": profileModal("teacher"); break;
+      case "switchrole": profileModal(v); break;
+      case "logout": profile = { username: "", password: "", name: "", cls: "", role: "student" }; store.set("profile", profile); S.dtab = "me"; $("#modal").innerHTML = ""; render(); break;
+      case "sheetcfg": sheetConfigModal(); break;
+      case "testsheet": testOrSaveSheet(false, t); break;
+      case "savesheet": testOrSaveSheet(true, t); break;
+      case "clearsheet": store.del("sheet_url"); S.syncStatus = ""; $("#modal").innerHTML = ""; render(); break;
+      case "copygas": navigator.clipboard.writeText(GS.GAS_SCRIPT_TEMPLATE).then(() => { t.textContent = "✅ Đã sao chép mã!"; setTimeout(() => { if (t.isConnected) t.textContent = "📋 Sao chép mã Apps Script"; }, 2500); }); break;
+      case "copyshare": { const inp = $("#gs-share"); if (inp) navigator.clipboard.writeText(inp.value).then(() => { t.textContent = "✅ Đã copy link!"; setTimeout(() => { if (t.isConnected) t.textContent = "📋 Copy Link gửi HS"; }, 2500); }); break; }
+      case "syncnow": {
+        const m = $("#sync-me-msg"); if (m) m.textContent = "⏳ Đang đồng bộ toàn bộ nhật ký của em lên Google Sheet…";
+        syncLogsToSheet(true).then((r) => { if (m) m.innerHTML = `<span class="v-strong">✅ Đồng bộ thành công! (Đã thêm mới ${r.added || 0} bản ghi).</span>`; }).catch((err) => { if (m) m.innerHTML = `<span class="v-break">❌ ${esc(err.message)}</span>`; });
+        break;
+      }
+      case "refreshsheet": fetchTeacherSheetData(false); break;
+      case "stuview": studentDetailModal(v); break;
+      case "manageusers": manageUsersModal(); break;
+      case "saveuser": {
+        const u = ($("#mu-user").value || "").trim().toLowerCase(), p = ($("#mu-pass").value || "").trim(), n = ($("#mu-name").value || "").trim(), c = ($("#mu-cls").value || "").trim().toUpperCase(), rl = $("#mu-role").value;
+        const m = $("#mu-msg"); if (!u) { if (m) m.textContent = "⚠️ Vui lòng nhập Mã đăng nhập."; break; }
+        t.disabled = true; if (m) m.textContent = "⏳ Đang lưu lên Google Sheet…";
+        GS.callSheet(sheetUrl(), { action: "upsertUser", teacherUsername: profile.username, teacherPassword: profile.password, username: u, password: p, name: n, cls: c, role: rl })
+          .then(() => fetchTeacherSheetData(true))
+          .then(() => manageUsersModal(`✅ Đã lưu tài khoản "${u}" thành công!`))
+          .catch((err) => { if (m) m.textContent = "❌ " + err.message; if (t.isConnected) t.disabled = false; });
+        break;
+      }
       case "closemodal": $("#modal").innerHTML = ""; break;
       case "apikey": apiKeyModal(); break;
       case "togglekey": { const inp = $("#kv"), show = inp.type === "password"; inp.type = show ? "text" : "password"; t.textContent = show ? "Ẩn" : "Hiện"; break; }
@@ -436,7 +907,7 @@
       case "testkey": testKey(t); break;
       case "savekey": { const key = readKey(); if (!key) break; store.set("gemini_api_key", key); store.set("gemini_model", S.pickModel); $("#modal").innerHTML = ""; render(); break; }
       case "clearkey": store.del("gemini_api_key"); store.del("gemini_model"); $("#modal").innerHTML = ""; render(); break;
-      case "saveprofile": profile = { name: $("#pn").value.trim(), cls: $("#pc").value.trim().toUpperCase() }; store.set("profile", profile); $("#modal").innerHTML = ""; render(); break;
+      case "saveprofile": doSaveProfile(t); break;
       case "gtab": S.gtab = v; guide(); break;
       case "tsec": S.tsec = v; guide(); break;
       case "qzpick": { const [i, j] = v.split(":").map(Number); S.qz = S.qz || {}; S.qz[i] = j; guide(); break; }
@@ -462,20 +933,24 @@
       case "retest": S.test = null; testView(); break;
       case "dtab": S.dtab = v; dash(); break;
       case "exportjson": { const mine = logs.filter((l) => !profile.name || l.student === profile.name || !l.student); download(`ccn-nhat-ky-${(profile.name || "hs").replace(/[^\p{L}\p{N}]+/gu, "_")}.json`, JSON.stringify(mine), "application/json"); break; }
-      case "clearlogs": if (confirm("Xóa toàn bộ nhật ký học tập trên máy này? Không thể hoàn tác.")) { logs = []; progress = {}; store.set("logs", logs); store.set("progress", progress); dash(); } break;
+      case "clearlogs": if (confirm("Xóa toàn bộ nhật ký học tập trên máy này? Không thể hoàn tác.")) { logs = []; progress = {}; store.set("logs", logs); store.set("progress", progress); store.del("synced_ids"); dash(); } break;
       case "clearimp": S.imported = []; dash(); break;
-      case "exportcsv": { const A = S._agg; if (!A) break; const head = ["Học sinh", "Lớp", "Lượt luyện", "Số đúng", "Tỷ lệ đúng", "KT lần đầu", "KT gần nhất", "KT tốt nhất", "Breakdown", "Bảng kiểm", "Số ngày học"]; const rows = A.rows.map((r) => [r.student, r.cls, r.attempts, r.correct, r.attempts ? (r.accuracy * 100).toFixed(1) : "", r.firstTest ?? "", r.lastTest ?? "", r.bestTest ?? "", r.breakdown, r.checklists, r.days]); download("ccn-tong-hop-lop.csv", "\ufeff" + [head, ...rows].map((r) => r.map(csvCell).join(",")).join("\r\n"), "text/csv;charset=utf-8"); break; }
+      case "exportcsv": { const A = S._agg; if (!A) break; const head = ["Mã HS", "Học sinh", "Lớp", "Lượt luyện", "Số đúng", "Tỷ lệ đúng", "KT lần đầu", "KT gần nhất", "KT tốt nhất", "Breakdown", "Bảng kiểm", "Số ngày học", "Hoạt động gần nhất"]; const rows = A.rows.map((r) => [r.username || "", r.student, r.cls, r.attempts, r.correct, r.attempts ? (r.accuracy * 100).toFixed(1) : "", r.firstTest ?? "", r.lastTest ?? "", r.bestTest ?? "", r.breakdown, r.checklists, r.days, r.lastTs ? r.lastTs.slice(0, 16).replace("T", " ") : ""]); download("ccn-tong-hop-lop.csv", "\ufeff" + [head, ...rows].map((r) => r.map(csvCell).join(",")).join("\r\n"), "text/csv;charset=utf-8"); break; }
     }
   });
   document.addEventListener("click", (e) => { const o = e.target.closest(".opt[data-act=pick]"); if (o && S.view === "test") { const T = S.test; T.ans[T.ids[T.i]] = +o.dataset.v; testView(); } }, true);
   document.addEventListener("change", (e) => {
-    if (e.target.id === "uselocal") { S.useLocal = e.target.checked; dash(); }
+    if (e.target.id === "uselocal") { S.useLocal = e.target.checked; dashTeacher(true); }
+    if (e.target.id === "clsFilter") { S.clsFilter = e.target.value; dashTeacher(true); }
     if (e.target.id === "files") {
       const fs = [...e.target.files]; S.imported = S.imported || [];
-      Promise.all(fs.map((f) => f.text().then((t) => { try { const j = JSON.parse(t); return Array.isArray(j) ? j.slice(0, 5000) : []; } catch (er) { return []; } }))).then((arrs) => { S.imported = E.cleanLogs(S.imported.concat(...arrs)); dash(); });
+      Promise.all(fs.map((f) => f.text().then((t) => { try { const j = JSON.parse(t); return Array.isArray(j) ? j.slice(0, 5000) : []; } catch (er) { return []; } }))).then((arrs) => { S.imported = E.cleanLogs(S.imported.concat(...arrs)); dashTeacher(true); });
     }
   });
-  document.addEventListener("input", (e) => { if (e.target.id === "mapin") { clearTimeout(S._mt); S._mt = setTimeout(runMap, 250); } });
+  document.addEventListener("input", (e) => {
+    if (e.target.id === "mapin") { clearTimeout(S._mt); S._mt = setTimeout(runMap, 250); }
+    if (e.target.id === "stuSearch") { S.stuQuery = e.target.value; clearTimeout(S._st); S._st = setTimeout(() => { dashTeacher(true); const el = $("#stuSearch"); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 200); }
+  });
 
   render();
 })();

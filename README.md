@@ -11,7 +11,7 @@
 | 2. Coherence Flow-Mapping | Tự tìm đại từ quy chiếu, từ nối, từ khóa lặp, cầu nối Given – New giữa từng cặp câu và cảnh báo chỗ gãy mạch | 🗺️ Bản đồ Given–New |
 | 3. Breakdown Analysis Tasks | Đoạn văn bị xáo trộn có chủ ý; học sinh đánh dấu điểm gãy mạch, hệ thống chấm | 🔍 Điểm gãy |
 | 3. Kiểm tra đánh giá | Bài 10 câu, 30 phút, không phản hồi khi làm; sau khi nộp có phân tích từng câu; bảng kiểm tự đánh giá (4 tiêu chí) | 📝 Kiểm tra |
-| 3. Theo dõi tiến bộ | Thống kê cá nhân; giáo viên gộp tệp JSON của cả lớp, xem tỷ lệ đúng, điểm lần đầu → gần nhất, lỗi phổ biến, câu khó nhất; xuất CSV | 📊 Tiến bộ |
+| 3. Theo dõi tiến bộ & Google Sheet | Phân quyền Học sinh / Giáo viên qua Google Sheets (`TaiKhoan`, `NhatKy`, `TongHop`); tự động đồng bộ hoạt động của học sinh theo thời gian thực; bảng điều khiển Giáo viên lọc theo lớp, xem chi tiết lời giải thích Bước 4 của từng học sinh, xuất CSV | 📊 Tiến bộ |
 
 Trợ lý AI dùng System Prompt theo Phụ lục 7 của sáng kiến (tiếng Việt, ≤120 từ, dẫn bằng chứng văn bản, không nêu đáp án khi chưa cho phép, kết thúc bằng câu hỏi tự kiểm tra). Người dùng tự nhập khóa Gemini ở nút **⚙️ API Key** trên thanh đầu trang; hoặc giáo viên đặt khóa chung trên Vercel để học sinh không cần khóa riêng (khóa riêng được ưu tiên). Khi chưa có khóa, ứng dụng vẫn đầy đủ chức năng với phản hồi cục bộ.
 
@@ -23,9 +23,11 @@ css/style.css
 js/data.js        ngân hàng bài tập, công cụ liên kết, bảng từ nối
 js/theory.js      lý thuyết nền, thuật ngữ, cụm chức năng, quiz
 js/engine.js      bộ máy phân tích, phản hồi cục bộ, thống kê
+js/sheet.js       kết nối Google Sheets (Apps Script), phân quyền HS/GV & đồng bộ nhật ký
 js/app.js         giao diện và điều hướng
 js/ai.js          gọi Gemini, chuỗi model dự phòng, phân loại lỗi (dùng chung cho trình duyệt và máy chủ)
 api/chat.js       Vercel Serverless Function dùng khóa của máy chủ (biến môi trường, tùy chọn)
+scripts/google-apps-script.gs  mã Google Apps Script dán vào Google Sheet của giáo viên
 scripts/dev-server.js  chạy thử trên máy cá nhân (npm start); không đặt tệp server.js ở thư mục gốc vì Vercel sẽ coi đó là máy chủ của cả trang
 scripts/selftest.js  kiểm tra ngân hàng bài tập (npm test)
 vercel.json  package.json  .env.example  .gitignore  .vercelignore
